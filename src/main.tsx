@@ -212,6 +212,8 @@ function App() {
     [query, setQuery] = useState(""),
     [search, setSearch] = useState(""),
     [genre, setGenre] = useState(""),
+    [formatFilter, setFormatFilter] = useState(""),
+    [stateFilter, setStateFilter] = useState(""),
     [zone, setZone] = useState("Téléchargements"),
     [offset, setOffset] = useState(0),
     [selected, setSelected] = useState<string[]>([]),
@@ -244,6 +246,8 @@ function App() {
       setQuery("");
       setSearch("");
       setGenre("");
+      setFormatFilter("");
+      setStateFilter("");
       setOffset(0);
       setSelected([]);
       window.scrollTo({ top: 0 });
@@ -286,16 +290,76 @@ function App() {
     }
     location.hash = routes[index];
   };
-  const albumUrl = `/albums?q=${encodeURIComponent(search)}&genre=${encodeURIComponent(genre)}&zone=${encodeURIComponent(page === 1 ? zone : "Bibliothèque")}&offset=${offset}&limit=60`;
+  const albumUrl = `/albums?q=${encodeURIComponent(search)}&genre=${encodeURIComponent(genre)}&zone=${encodeURIComponent(page === 1 ? zone : "Bibliothèque")}&format=${encodeURIComponent(page === 1 ? formatFilter : "")}&state=${encodeURIComponent(page === 1 ? stateFilter : "")}&offset=${offset}&limit=60`;
   const library = useResource<{
     items: Album[];
     total: number;
     genres: string[];
+    formats: string[];
   }>([0, 1, 2, 3, 5, 6].includes(page) ? albumUrl : null, revision);
   const albums = library.data?.items || [];
   const artistList = useResource<{ items: string[] }>(
     [5, 6].includes(page) ? "/artists" : null,
     revision,
+  );
+  const selectedVisible = albums.filter((a) => selected.includes(a.id)).length;
+  const selectionControls = (position: "top" | "bottom") => (
+    <div
+      className={`selection-bar explorer-selection ${position} ${selected.length ? "has-selection" : ""}`}
+      role="region"
+      aria-label={
+        position === "top"
+          ? "Sélection avant la liste"
+          : "Sélection après la liste"
+      }
+    >
+      <div className="selection-summary">
+        <strong>{selected.length} album(s) sélectionné(s)</strong>
+        {selected.length > selectedVisible && (
+          <small>
+            {selected.length - selectedVisible} hors de cette page ou des
+            filtres
+          </small>
+        )}
+      </div>
+      <div className="selection-actions">
+        <button
+          className="text-button"
+          disabled={
+            !albums.some((a) => !selected.includes(a.id)) ||
+            selected.length >= 20 ||
+            library.loading ||
+            !!library.error
+          }
+          onClick={() =>
+            setSelected((ids) =>
+              Array.from(new Set([...ids, ...albums.map((a) => a.id)])).slice(
+                0,
+                20,
+              ),
+            )
+          }
+        >
+          Sélectionner la page (20 max)
+        </button>
+        <button
+          className="text-button"
+          disabled={!selected.length}
+          onClick={() => setSelected([])}
+        >
+          Tout désélectionner
+        </button>
+        <button
+          className="primary"
+          disabled={!selected.length || library.loading}
+          onClick={() =>
+            setAction({ ids: selected, name: `${selected.length} album(s)` })
+          }
+        >
+          Gérer la sélection <ChevronRight size={16} />
+        </button>
+      </div>
+    </div>
   );
   const task = async (work: () => Promise<unknown>, message?: string) => {
     setBusy(true);
@@ -335,7 +399,9 @@ function App() {
   const scan = () =>
     task(() => api("/scan", {}), "Analyse lancée en arrière-plan.");
   return (
-    <div className="app">
+    <div
+      className={page === 1 && selected.length ? "app with-selection" : "app"}
+    >
       <aside>
         <a className="brand" href="#accueil">
           <span className="brand-symbol">
@@ -633,69 +699,140 @@ function App() {
               ) : (
                 <>
                   <Explorer zone={zone} revision={revision} />
-                  <div className="section-heading">
-                    <h2>Albums dans cet espace</h2>
-                    <span className="muted">
-                      {library.data?.total ?? 0} album(s)
-                    </span>
-                  </div>
-                  <div className="real-album-list">
-                    {albums.map((a) => (
-                      <div className="explorer-album" key={a.id}>
-                        <input
-                          aria-label={`Sélectionner ${a.title}`}
-                          type="checkbox"
-                          checked={selected.includes(a.id)}
-                          onChange={() =>
-                            setSelected((s) =>
-                              s.includes(a.id)
-                                ? s.filter((id) => id !== a.id)
-                                : [...s, a.id],
-                            )
-                          }
-                        />
-                        <button
-                          className="table-album"
-                          onClick={() => setDetail(a.id)}
-                        >
-                          <Cover album={a} small />
-                          <span>
-                            <strong>{a.title}</strong>
-                            <small>
-                              {a.artist} · {a.tracks} pistes · {a.format}
-                            </small>
-                          </span>
-                        </button>
-                        <button
-                          className="icon-button"
-                          aria-label={`Gérer ${a.title}`}
-                          onClick={() =>
-                            setAction({ ids: [a.id], name: a.title })
-                          }
-                        >
-                          <MoreHorizontal />
-                        </button>
-                      </div>
-                    ))}
-                    {!albums.length && !library.loading && (
-                      <p className="muted">
-                        Aucun album audio dans cet espace.
-                      </p>
-                    )}
-                  </div>
-                  <div className="selection-bar">
-                    <span>{selected.length} album(s) sélectionné(s)</span>
-                    <button
-                      disabled={!selected.length}
-                      onClick={() =>
-                        setAction({
-                          ids: selected,
-                          name: `${selected.length} album(s)`,
-                        })
-                      }
+                  <div className="explorer-results">
+                    <div className="section-heading">
+                      <h2>Albums dans cet espace</h2>
+                      <span className="muted">
+                        {library.data?.total ?? 0} album(s)
+                      </span>
+                    </div>
+                    <div
+                      className="explorer-filters"
+                      role="group"
+                      aria-label="Filtrer les albums de cet espace"
                     >
-                      Gérer la sélection <ChevronRight size={16} />
-                    </button>
+                      <label>
+                        Genre
+                        <select
+                          value={genre}
+                          onChange={(e) => {
+                            setGenre(e.target.value);
+                            setOffset(0);
+                          }}
+                        >
+                          <option value="">Tous les genres</option>
+                          {library.data?.genres.map((g) => (
+                            <option key={g}>{g}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Format
+                        <select
+                          value={formatFilter}
+                          onChange={(e) => {
+                            setFormatFilter(e.target.value);
+                            setOffset(0);
+                          }}
+                        >
+                          <option value="">Tous les formats</option>
+                          {library.data?.formats?.map((f) => (
+                            <option key={f}>{f}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        État
+                        <select
+                          value={stateFilter}
+                          onChange={(e) => {
+                            setStateFilter(e.target.value);
+                            setOffset(0);
+                          }}
+                        >
+                          <option value="">Tous les états</option>
+                          <option value="incomplete">Incomplets</option>
+                          <option value="unknown">À identifier</option>
+                          <option value="complete">
+                            Complets selon la référence
+                          </option>
+                        </select>
+                      </label>
+                      {(query || genre || formatFilter || stateFilter) && (
+                        <button
+                          className="text-button"
+                          onClick={() => {
+                            setQuery("");
+                            setSearch("");
+                            setGenre("");
+                            setFormatFilter("");
+                            setStateFilter("");
+                            setOffset(0);
+                          }}
+                        >
+                          Effacer les filtres
+                        </button>
+                      )}
+                    </div>
+                    <p className="muted selection-limit">
+                      20 albums maximum par opération. La sélection est
+                      conservée entre les pages et les filtres.
+                    </p>
+                    {selectionControls("top")}
+                    <div
+                      className="real-album-list"
+                      aria-busy={library.loading}
+                    >
+                      {albums.map((a) => (
+                        <div className="explorer-album" key={a.id}>
+                          <input
+                            aria-label={`Sélectionner ${a.title}`}
+                            type="checkbox"
+                            checked={selected.includes(a.id)}
+                            disabled={
+                              library.loading ||
+                              (!selected.includes(a.id) &&
+                                selected.length >= 20)
+                            }
+                            onChange={() =>
+                              setSelected((s) =>
+                                s.includes(a.id)
+                                  ? s.filter((id) => id !== a.id)
+                                  : [...s, a.id],
+                              )
+                            }
+                          />
+                          <button
+                            className="table-album"
+                            onClick={() => setDetail(a.id)}
+                          >
+                            <Cover album={a} small />
+                            <span>
+                              <strong>{a.title}</strong>
+                              <small>
+                                {a.artist} · {a.tracks} pistes · {a.format}
+                              </small>
+                            </span>
+                          </button>
+                          <button
+                            className="icon-button"
+                            aria-label={`Gérer ${a.title}`}
+                            onClick={() =>
+                              setAction({ ids: [a.id], name: a.title })
+                            }
+                          >
+                            <MoreHorizontal />
+                          </button>
+                        </div>
+                      ))}
+                      {!albums.length && !library.loading && (
+                        <p className="muted">
+                          Aucun album ne correspond à ces filtres dans cet
+                          espace.
+                        </p>
+                      )}
+                    </div>
+                    {selectionControls("bottom")}
                   </div>
                 </>
               )}

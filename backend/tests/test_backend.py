@@ -463,3 +463,15 @@ def test_playlist_never_substitutes_same_title_with_other_audio(client, monkeypa
             )
         )
     assert exc.value.status_code == 409
+
+
+def test_album_filters_are_applied_before_pagination(client):
+    values=[('a','Rock','FLAC, MP3','incomplete'),('b','Jazz','FLAC','unknown'),('c','Rock','MP3','complete')]
+    with m.db() as c:
+        for aid,genre,format,state in values:
+            album={'id':aid,'artist':'Artist','title':aid,'year':2000,'genre':genre,'format':format,'completeness':state,'zone':'Bibliothèque'}
+            c.execute('INSERT INTO albums VALUES (?,?)',(aid,json.dumps(album)))
+    response=client.get('/api/albums',params={'genre':'Rock','format':'MP3','state':'incomplete','limit':1})
+    assert response.status_code==200
+    payload=response.json();assert payload['total']==1;assert [a['id'] for a in payload['items']]==['a'];assert payload['formats']==['FLAC','MP3']
+    assert client.get('/api/albums',params={'format':'AAC'}).json()['total']==0

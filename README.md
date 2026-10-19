@@ -10,7 +10,7 @@ Navigation mobile en bas de l’écran : Accueil, Albums, Explorateur et Plus. N
 
 - Indexation incrémentale en arrière-plan : tags, formats, durée, pochettes intégrées et fichiers cover/folder.
 - Explorateur des dossiers music, incoming (Deemix) et quarantine ; préécoute audio avec prise en charge des requêtes Range.
-- Recherche, filtre de genre et pagination des albums.
+- Recherche, filtres de genre/format/état et pagination des albums. Dans l’explorateur, les actions de sélection sont disponibles avant et après la liste, et restent visibles en bas lorsqu’une sélection existe. La sélection est conservée entre les filtres/pages (20 albums maximum par opération).
 - Complétude d’après les totaux des tags et comparaison d’une édition MusicBrainz choisie explicitement.
 - Doublons par SHA-256 et versions portant le même artiste/titre à comparer, sans suppression automatique.
 - Radio locale à partir de l’artiste et des genres présents, export M3U et création de playlist Navidrome.

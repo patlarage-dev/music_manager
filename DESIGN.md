@@ -66,3 +66,5 @@ Icônes Lucide cohérentes. Commande pêche pour l’action principale, commande
 ## Adaptation téléphone, version 0.2
 La navigation latérale est remplacée sous 768 px par quatre accès persistants en bas : Accueil, Albums, Explorateur, Plus. Plus ouvre une feuille native modale contenant toutes les sections, avec fermeture visible, confinement natif du focus et Échap. Le choix courant reste signalé. Safe areas iOS prises en compte ; le contenu conserve une marge sous la barre. Les champs ont une taille de texte de 16 px et les actions tactiles une hauteur minimale de 44 px. Le menu desktop garde son identité.
 Les pochettes viennent des fichiers réels ; une absence se montre par un disque neutre et le titre, sans inventer une illustration officielle. Les états vides, connexion indisponible et édition inconnue sont explicites.
+
+Explorateur : commandes identiques avant/après la liste ; la commande inférieure devient persistante pendant une sélection, au-dessus de la navigation mobile. Les filtres portent sur les albums de l’espace, côté serveur avant pagination. Signaler les albums sélectionnés hors des résultats et fournir une désélection globale.

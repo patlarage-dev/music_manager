@@ -769,6 +769,8 @@ def list_albums(
     limit: int = 60,
     sort: str = "artist",
     attention: bool = False,
+    format: str = "",
+    state: str = "",
 ):
     values = all_albums()
     values = [
@@ -776,6 +778,8 @@ def list_albums(
         for a in values
         if (not zone or a["zone"] == zone)
         and (not genre or a["genre"] == genre)
+        and (not format or format.upper() in a["format"].split(", "))
+        and (not state or a["completeness"] == state)
         and q.casefold() in f"{a['artist']} {a['title']}".casefold()
     ]
     if attention:
@@ -787,6 +791,7 @@ def list_albums(
         "items": values[max(0, offset) : max(0, offset) + min(max(limit, 1), 100)],
         "total": len(values),
         "genres": sorted({a["genre"] for a in all_albums()}),
+        "formats": sorted({f for a in all_albums() for f in a["format"].split(", ")}),
     }
 
 

@@ -2646,4 +2646,127 @@ audio {
   }
 }
 
-.settings h2 { display:flex; align-items:center; gap:10px; }
+.settings h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.explorer-results {
+  position: relative;
+}
+.explorer-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px;
+  margin: 18px 0;
+}
+.explorer-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  flex: 1;
+  min-width: 150px;
+}
+.explorer-filters select {
+  width: 100%;
+}
+.explorer-selection {
+  gap: 16px;
+  padding: 16px;
+  background: #1c2734;
+  border-radius: 10px;
+  font-size: 12px;
+  margin: 16px 0;
+}
+.selection-summary {
+  flex: none;
+}
+.selection-summary strong {
+  display: block;
+  font-size: 12px;
+}
+.selection-summary small {
+  display: block;
+  margin-top: 6px;
+  color: #b1bdcb;
+  font-size: 11px;
+}
+.selection-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.selection-actions button {
+  min-height: 44px;
+  font-size: 12px;
+}
+.explorer-selection.bottom.has-selection {
+  position: sticky;
+  bottom: 16px;
+  z-index: 10;
+  box-shadow: 0 8px 24px #0005;
+}
+.selection-limit {
+  font-size: 11px;
+  margin-bottom: 12px;
+}
+@media (max-width: 767px) {
+  .explorer-filters {
+    gap: 12px;
+  }
+  .explorer-filters label {
+    min-width: 120px;
+    font-size: 13px;
+  }
+  .explorer-filters label:last-of-type {
+    flex-basis: 100%;
+  }
+  .explorer-filters select {
+    font-size: 16px;
+    min-height: 46px;
+  }
+  .explorer-selection {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px;
+  }
+  .selection-summary strong {
+    font-size: 13px;
+  }
+  .selection-summary small {
+    font-size: 12px;
+  }
+  .selection-actions {
+    width: 100%;
+    justify-content: space-between;
+    gap: 8px 12px;
+  }
+  .selection-actions button {
+    font-size: 12px;
+  }
+  .selection-actions .primary {
+    flex-basis: 100%;
+    font-size: 14px;
+  }
+  .explorer-selection.bottom.has-selection {
+    bottom: calc(86px + env(safe-area-inset-bottom));
+  }
+  .explorer-selection.bottom.has-selection .selection-actions > .text-button {
+    display: none;
+  }
+  .explorer-selection.bottom.has-selection {
+    gap: 8px;
+    padding: 12px 14px;
+  }
+  .selection-limit {
+    font-size: 12px;
+  }
+  .with-selection .toast {
+    bottom: calc(220px + env(safe-area-inset-bottom));
+  }
+}
