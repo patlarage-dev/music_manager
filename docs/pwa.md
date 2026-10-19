@@ -1,6 +1,6 @@
 # Installer Music Manager
 
-Adresse HTTPS privée prévue : https://macmini-server.tail9ed71f.ts.net:9444/ (Tailscale actif).
+Adresse HTTPS privée vérifiée : https://macmini-server.tail9ed71f.ts.net:9444/ (Tailscale actif).
 
 ## iPhone et iPad
 

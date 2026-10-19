@@ -2,7 +2,7 @@ services:
   music-manager:
     labels:
       mini.name: "Music Manager"
-      mini.url: "http://macmini-server.tail9ed71f.ts.net:8095/"
+      mini.url: "https://macmini-server.tail9ed71f.ts.net:9444/"
       mini.icon: "/icons/music-manager.svg"
     build: .
     image: music-manager:${APP_VERSION:-local}

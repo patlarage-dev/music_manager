@@ -2,7 +2,7 @@
 
 Application personnelle en français, connectée aux fichiers du serveur Debian et à l’API OpenSubsonic de Navidrome.
 
-[Ouvrir l’application via Tailscale](http://100.120.247.35:8095/).
+[Ouvrir l’application via Tailscale en HTTPS](https://macmini-server.tail9ed71f.ts.net:9444/).
 
 ## Version 0.2
 
