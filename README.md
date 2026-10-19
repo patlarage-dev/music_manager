@@ -1,32 +1,50 @@
 # Music Manager
 
-Interface française de gestion d’une collection personnelle. Première itération du cahier des charges : neuf écrans navigables, données de démonstration clairement indiquées. Aucun accès aux fichiers musicaux et aucune connexion aux services existants.
+Application personnelle en français, connectée aux fichiers du serveur Debian et à l’API OpenSubsonic de Navidrome.
 
-## Version déployée
+[Ouvrir l’application via Tailscale](http://100.120.247.35:8095/).
 
-[Ouvrir Music Manager sur Tailscale](http://100.120.247.35:8095/) — accès privé au tailnet, HTTP. Les fonctions de cette version sont démonstratives.
+## Version 0.2
 
-## Lancer localement
+Navigation mobile en bas de l’écran : Accueil, Albums, Explorateur et Plus. Navigation latérale conservée sur ordinateur. Les neuf sections affichent les données réelles ; aucun repli silencieux sur des données fictives.
 
-Node.js 22 recommandé.
+- Indexation incrémentale en arrière-plan : tags, formats, durée, pochettes intégrées et fichiers cover/folder.
+- Explorateur des dossiers music, incoming (Deemix) et quarantine ; préécoute audio avec prise en charge des requêtes Range.
+- Recherche, filtre de genre et pagination des albums.
+- Complétude d’après les totaux des tags et comparaison d’une édition MusicBrainz choisie explicitement.
+- Doublons par SHA-256 et versions portant le même artiste/titre à comparer, sans suppression automatique.
+- Radio locale à partir de l’artiste et des genres présents, export M3U et création de playlist Navidrome.
+- Suggestions similaires via Navidrome et, à défaut, artistes locaux partageant un genre. Suivis persistants.
+- Déplacement, renommage et corbeille d’albums après prévisualisation ; historique et restauration sans écrasement.
+- Édition des tags d’album (artiste de l’album, nom, année, genre), copie complète avant écriture et restauration.
+
+## Connecter son compte
+
+Dans **Paramètres → Connexion Navidrome**, saisir son compte Navidrome actuel. Aucun mot de passe à transmettre au développeur. Le mot de passe sert à produire les identifiants Subsonic ; seuls le nom et le couple sel/empreinte sont conservés dans le volume privé `state/`. Ce couple reste un secret équivalent à des identifiants. Les opérations Navidrome utilisent les identifiants de la session concernée. Les éditions de fichiers exigent un rôle administrateur Navidrome et une confirmation à l’écran.
+
+Amperfy utilise les playlists du même serveur Navidrome. Il faut rafraîchir sa bibliothèque/playlists après création.
+
+## Développement local
 
 ```sh
 npm ci
 npm run dev
 ```
 
-Ouvrir http://127.0.0.1:5173. Pour compiler : `npm run build`. Pour vérifier les invariants : `npm test`.
+Le serveur Vite relaie `/api` vers `127.0.0.1:8000`. Dans un environnement Python 3.13 :
 
-## Fonctionnalités disponibles
+```sh
+python -m venv .venv
+.venv/bin/pip install -r backend/requirements.txt pytest
+STATE_DIR=/tmp/music-manager-state MEDIA_ROOT=/chemin/vers/des/fichiers-de-test .venv/bin/uvicorn backend.app:app --host 127.0.0.1 --port 8000
+```
 
-Tableau de bord, explorateur filtrable avec sélection, bibliothèque et fiches album, albums incomplets, comparaison de doublons, artistes suivis, génération d’une sélection illustrée, export M3U de démonstration, corbeille et restauration, historique de session, préférences simulées. La corbeille de démonstration est conservée dans le navigateur. Les autres choix restent en mémoire pour la session.
+Ne pas utiliser une bibliothèque de production comme fixture de test. `npm run build`, `npm test`, puis `python -m pytest backend/tests -q`. Les tests Python utilisent exclusivement des répertoires temporaires. Le Dockerfile backend comporte une cible `test` pour exécuter ces contrôles sous Linux.
 
-Les visuels sont des compositions graphiques originales illustratives, pas des pochettes officielles. Les nombres, formats et pistes sont fictifs. L’export M3U ne contient aucun chemin audio et ne permet pas la lecture.
+## Déploiement et limites
 
-## Déployer sur Debian
+[Procédure et retour arrière](docs/deploiement.md) · [Architecture](docs/architecture.md).
 
-Voir [la procédure](docs/deploiement.md). Docker Compose expose uniquement une adresse choisie explicitement, sans volume musical, sans socket Docker et sans privilèges. Ne pas exposer ce prototype directement sur Internet.
+Accès privé Tailscale ; pas de publication Internet. Aucun socket Docker monté. Le backend tourne avec UID 1000 et ne publie aucun port hôte. Le montage parent `/mnt/media` permet des renommages atomiques ; les opérations applicatives sont strictement limitées aux trois racines configurées. Pas de purge définitive ni automatique. Les sauvegardes de tags occupent de l’espace jusqu’à une gestion de rétention ultérieure.
 
-## Suite du projet
-
-Voir [l’architecture](docs/architecture.md). Les fonctions d’analyse réelle, écriture de tags, déplacement, doublons automatiques, API musicales, lecture et synchronisation Navidrome ne sont pas encore implémentées. Le manifeste prépare l’installation ; une PWA complète et son cache hors ligne restent à valider sur HTTPS et sur iOS.
+Pas d’empreinte acoustique ni de classement automatique de qualité. La radio utilise les tags, pas une analyse acoustique d’ambiance. Pas d’historique d’écoute transmis. Les intégrations Last.fm et ListenBrainz directes et le téléchargement automatique ne sont pas activés. Les pistes manquantes ne sont fiables que pour l’édition et les numéros de disque/piste identifiés. Les codecs de préécoute dépendent du navigateur ; Navidrome reste le lecteur principal. HTTPS et le mode PWA hors ligne restent à configurer.

@@ -12,3 +12,6 @@ Administrer, organiser et découvrir la collection, en complément de Deemix, Na
 Neuf écrans français, responsive et sombre. Première itération avec données fictives explicitement signalées. Aucune opération réelle sur les fichiers musicaux. Déploiement Debian autorisé le 19 octobre 2026 par l’utilisateur. Opérations futures réversibles et corbeille de 30 jours.
 ## Evidence on Hand
 Cahier des charges partagé par le propriétaire. Aucun inventaire musical réel disponible.
+
+## Itération connectée du 19 octobre 2026
+L’utilisateur demande une amélioration du menu sur téléphone et les connexions à sa bibliothèque actuelle et Navidrome. Il choisit son compte Navidrome actuel, à saisir dans Paramètres. Racines et permissions inspectées sur Debian : patrick UID 1000, music/incoming/quarantine. Navidrome appartient au réseau Docker music_backend. Aucune opération de déplacement, suppression ou édition n’est nécessaire pour connecter l’index.

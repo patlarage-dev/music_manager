@@ -1,33 +1,37 @@
-# Mise en ligne Debian
+# Déploiement Debian
 
-Cible fournie : patrick@100.120.247.35 via Tailscale. Branche souhaitée : music_manager.
+Cible : `patrick@100.120.247.35`, application dans `/home/patrick/apps/music-manager`, accès [Tailscale privé](http://100.120.247.35:8095/). Branche GitHub : `music_manager`.
 
-## Contrôles préalables
+## Installation
 
-Connexion SSH autorisée et Docker Compose disponibles ; inspecter `docker ps` et `ss -ltn` pour vérifier que le port 8095 est libre. Ne pas modifier les services Deemix/Navidrome, les montages ou les permissions de la bibliothèque.
-
-Copier le code dans un répertoire dédié, par exemple `~/apps/music-manager`, puis :
+Docker et Compose doivent être disponibles, le réseau externe `music_backend` présent et le port 8095 libre. Les racines /mnt/media/music, incoming et quarantine doivent appartenir à l’UID 1000 avec des permissions appropriées. Ne pas effectuer de chown récursif sur les fichiers existants.
 
 ```sh
-BIND_ADDRESS=100.120.247.35 APP_PORT=8095 APP_VERSION=0.1.0 docker compose up -d --build
-curl --fail http://100.120.247.35:8095/health
-docker compose ps
+mkdir -p state
+chmod 700 state
+APP_VERSION=0.2.0 docker compose build
+APP_VERSION=0.2.0 docker compose up -d
+curl --fail http://100.120.247.35:8095/api/health
 ```
 
-Adresse attendue après vérification : http://100.120.247.35:8095, accessible aux appareils autorisés du tailnet. Aucune publication Internet. Le conteneur ne monte aucun fichier musical.
+Le fichier `.env` de ce serveur contient `BIND_ADDRESS=100.120.247.35`, `APP_PORT=8095`, `APP_VERSION=0.2.0`. `state/` contient les index, sessions, secrets Subsonic, sauvegardes et journaux : ne jamais publier ce dossier dans Git ou une archive de release. Le sauvegarder séparément en privé. L’application n’est pas conçue pour être exposée publiquement sans authentification réseau et HTTPS.
 
-Pour HTTPS, inspecter d’abord `tailscale serve status`, puis configurer un chemin ou port disponible sans remplacer une route existante. Ne pas activer Funnel.
+La première connexion Navidrome s’effectue dans Paramètres avec le compte actuel. Aucune écriture dans les fichiers musicaux ne peut être faite sans session administrateur et confirmation d’un plan. Deemix alimente incoming ; Navidrome continue de lire music.
+
+## Mise à jour
+
+Construire et tester avant de remplacer les conteneurs. Conserver les anciennes images et les fichiers Compose. Ne pas inclure `state/` dans la release. Tester le backend isolément : `docker build --target test -t music-manager-api:test backend`.
+
+Après mise à jour : vérifier `/api/status`, les compteurs réels, une pochette et une préécoute ; vérifier `docker compose ps`. Ne jamais tester la corbeille sur les albums personnels pour valider un déploiement : utiliser les tests isolés. Les empreintes de tous les fichiers de la bibliothèque ont été relevées avant intégration pour comparaison après démarrage.
 
 ## Retour arrière
 
-Avant mise à jour, conserver le code et l’image actuellement déployés et noter la version. Pour revenir à une image existante :
+L’interface v0.1 et sa configuration sont conservées dans `rollback-v01/`, l’image `music-manager:0.1.0` reste disponible. Pour revenir au prototype antérieur : arrêter uniquement le service backend de ce projet, rétablir les fichiers Compose/Nginx/Dockerfile de ce dossier de sauvegarde et lancer l’image 0.1.0 avec `--no-build`. Conserver `state/` et le journal de la v0.2 pour les éventuelles restaurations ; revenir à une version frontend seule ne restaure pas des fichiers déplacés ultérieurement.
 
-```sh
-APP_VERSION=VERSION_PRECEDENTE BIND_ADDRESS=100.120.247.35 docker compose up -d --no-build
-```
+## HTTPS
 
-Pour arrêter uniquement cette application : `docker compose down` dans son répertoire. Aucun volume musical n’est impliqué. La suppression de conteneur n’efface pas la corbeille simulée du navigateur.
+Les services Tailscale existants sur 443 et 8443 sont conservés. Un nouveau port HTTPS exige actuellement un mot de passe sudo. Ne pas remplacer ces routes et ne pas activer Funnel. L’accès actuel HTTP reste transporté dans le réseau Tailscale chiffré.
 
-## État
+## Intégration Mini
 
-La procédure n’est pas une preuve de déploiement. Vérifier le point de santé et l’interface sur le serveur après exécution. Déployé le 19 octobre 2026 dans `/home/patrick/apps/music-manager`, image `music-manager:0.1.0`. Point de santé et interface vérifiés depuis le navigateur sur http://100.120.247.35:8095. Le déverrouillage de la clé dans l’agent SSH du Mac a permis l’accès. HTTPS Tailscale sur un nouveau port nécessitera une commande sudo ; aucune configuration Tailscale existante n’a été remplacée.
+Le service web conserve les labels `mini.name`, `mini.url`, `mini.icon` définis dans Compose, conformément à AGENTS.md. L’icône existante est `/icons/music-manager.svg`. Le backend ne reçoit aucun lien Mini. Vérifier ces labels avec docker inspect après un déploiement.

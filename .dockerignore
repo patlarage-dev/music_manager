@@ -3,3 +3,7 @@ node_modules
 dist
 .env
 .impeccable
+
+state
+backend/__pycache__
+backend/.pytest_cache

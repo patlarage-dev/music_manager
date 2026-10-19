@@ -1,8 +1,19 @@
 services:
   music-manager:
+    labels:
+      mini.name: "Music Manager"
+      mini.url: "http://macmini-server.tail9ed71f.ts.net:8095/"
+      mini.icon: "/icons/music-manager.svg"
     build: .
     image: music-manager:${APP_VERSION:-local}
     restart: unless-stopped
+    healthcheck:
+      interval: 30s
+      start_period: 20s
+      start_interval: 2s
+    depends_on:
+      backend:
+        condition: service_healthy
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8095}:8080"
     read_only: true
@@ -14,3 +25,36 @@ services:
       - ALL
     mem_limit: 128m
     cpus: 0.50
+  backend:
+    build:
+      context: ./backend
+      target: runtime
+    image: music-manager-api:${APP_VERSION:-local}
+    restart: unless-stopped
+    healthcheck:
+      interval: 30s
+      start_period: 20s
+      start_interval: 2s
+    environment:
+      MEDIA_ROOT: /media
+      STATE_DIR: /data
+      NAVIDROME_URL: http://navidrome:4533
+      NAVIDROME_PUBLIC_URL: http://100.120.247.35:4533
+    volumes:
+      - ${MEDIA_PATH:-/mnt/media}:/media
+      - ./state:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 384m
+    cpus: 1.0
+    networks:
+      - default
+      - music_backend
+networks:
+  music_backend:
+    external: true

@@ -4,3 +4,11 @@ dist/
 *.local
 .DS_Store
 *.tsbuildinfo
+state/
+__pycache__/
+.pytest_cache/
+
+# Captures de la bibliothèque personnelle : conserver uniquement en local.
+docs/library-v02.png
+docs/mobile-menu-v02.png
+.venv/
