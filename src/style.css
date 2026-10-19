@@ -2645,3 +2645,5 @@ audio {
     transition: none;
   }
 }
+
+.settings h2 { display:flex; align-items:center; gap:10px; }

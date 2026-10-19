@@ -44,6 +44,7 @@ import {
   type Status,
 } from "./api";
 import "./style.css";
+import { InstallApp } from "./pwa";
 const pages = [
   "Tableau de bord",
   "Explorateur",
@@ -1585,6 +1586,7 @@ function SettingsPanel({
     [minutes, setMinutes] = useState<number | null>(null);
   return (
     <div className="settings">
+      <InstallApp />
       <section>
         <h2>Connexion Navidrome</h2>
         <p>

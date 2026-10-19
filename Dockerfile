@@ -5,6 +5,7 @@ RUN npm ci
 COPY index.html tsconfig.json ./
 COPY src ./src
 COPY public ./public
+COPY scripts ./scripts
 RUN npm run build
 FROM nginxinc/nginx-unprivileged:stable-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf

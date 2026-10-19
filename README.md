@@ -47,4 +47,8 @@ Ne pas utiliser une bibliothèque de production comme fixture de test. `npm run 
 
 Accès privé Tailscale ; pas de publication Internet. Aucun socket Docker monté. Le backend tourne avec UID 1000 et ne publie aucun port hôte. Le montage parent `/mnt/media` permet des renommages atomiques ; les opérations applicatives sont strictement limitées aux trois racines configurées. Pas de purge définitive ni automatique. Les sauvegardes de tags occupent de l’espace jusqu’à une gestion de rétention ultérieure.
 
-Pas d’empreinte acoustique ni de classement automatique de qualité. La radio utilise les tags, pas une analyse acoustique d’ambiance. Pas d’historique d’écoute transmis. Les intégrations Last.fm et ListenBrainz directes et le téléchargement automatique ne sont pas activés. Les pistes manquantes ne sont fiables que pour l’édition et les numéros de disque/piste identifiés. Les codecs de préécoute dépendent du navigateur ; Navidrome reste le lecteur principal. HTTPS et le mode PWA hors ligne restent à configurer.
+Pas d’empreinte acoustique ni de classement automatique de qualité. La radio utilise les tags, pas une analyse acoustique d’ambiance. Pas d’historique d’écoute transmis. Les intégrations Last.fm et ListenBrainz directes et le téléchargement automatique ne sont pas activés. Les pistes manquantes ne sont fiables que pour l’édition et les numéros de disque/piste identifiés. Les codecs de préécoute dépendent du navigateur ; Navidrome reste le lecteur principal. L’installation PWA est décrite dans [la procédure dédiée](docs/pwa.md). La musique n’est pas conservée pour une écoute hors ligne.
+
+## Installer l’application
+
+Le manifeste, les icônes disque pour iOS/Android et le service worker sont inclus. Utiliser l’adresse HTTPS Tailscale et suivre [la procédure PWA](docs/pwa.md). Une page de reconnexion est disponible hors ligne, sans cache des données privées ni de la musique.
