@@ -30,4 +30,4 @@ Pour arrêter uniquement cette application : `docker compose down` dans son rép
 
 ## État
 
-La procédure n’est pas une preuve de déploiement. Vérifier le point de santé et l’interface sur le serveur après exécution. Le premier essai SSH a été refusé pour le compte patrick (publickey).
+La procédure n’est pas une preuve de déploiement. Vérifier le point de santé et l’interface sur le serveur après exécution. Déployé le 19 octobre 2026 dans `/home/patrick/apps/music-manager`, image `music-manager:0.1.0`. Point de santé et interface vérifiés depuis le navigateur sur http://100.120.247.35:8095. Le déverrouillage de la clé dans l’agent SSH du Mac a permis l’accès. HTTPS Tailscale sur un nouveau port nécessitera une commande sudo ; aucune configuration Tailscale existante n’a été remplacée.

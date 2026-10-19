@@ -2,6 +2,10 @@
 
 Interface française de gestion d’une collection personnelle. Première itération du cahier des charges : neuf écrans navigables, données de démonstration clairement indiquées. Aucun accès aux fichiers musicaux et aucune connexion aux services existants.
 
+## Version déployée
+
+[Ouvrir Music Manager sur Tailscale](http://100.120.247.35:8095/) — accès privé au tailnet, HTTP. Les fonctions de cette version sont démonstratives.
+
 ## Lancer localement
 
 Node.js 22 recommandé.
