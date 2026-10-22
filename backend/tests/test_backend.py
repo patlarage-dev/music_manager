@@ -408,6 +408,16 @@ def test_playlist_virtual_paths_are_matched_by_original_bytes(client, monkeypatc
         if endpoint == "createPlaylist":
             created.extend(params["songId"])
             return {"playlist": {"id": "playlist", "songCount": 1}}
+        if endpoint == "getPlaylist":
+            return {
+                "playlist": {
+                    "id": "playlist",
+                    "songCount": 1,
+                    "entry": [{"id": "nav-song"}],
+                }
+            }
+        if endpoint == "getPlaylists":
+            return {"playlists": {"playlist": [{"id": "playlist"}]}}
         raise AssertionError(endpoint)
 
     async def download(song_id, credentials):
@@ -628,3 +638,192 @@ def test_compilation_batch_rolls_back_files_after_failure(client, monkeypatch):
     )
     for name, data in before.items():
         assert (root / name).read_bytes() == data
+
+
+def playlist_source(path, text):
+    path.write_text(text, encoding="utf-8-sig")
+    return next(
+        pid for pid, source in m.playlist_sources().items() if source["path"] == path
+    )
+
+
+def test_download_playlist_keeps_order_duplicates_and_reports_pending(client):
+    root, albums = compilation_fixture()
+    pid = playlist_source(
+        root / "Mix.m3u8", "#EXTM3U\n#EXTINF:1,Artist\nb.flac\na.flac\nb.flac\n"
+    )
+    result = client.get("/api/playlist-files/" + pid).json()
+    assert result["ready"] == 0
+    assert result["total"] == 3
+    assert [i["track"]["album"] for i in result["items"]] == [
+        "Album B",
+        "Album A",
+        "Album B",
+    ]
+    assert all(i["status"] == "incoming" for i in result["items"])
+
+
+def test_download_playlist_follows_file_moves_after_scan_and_restore(client):
+    root, albums = compilation_fixture()
+    pid = playlist_source(root / "Mix.m3u8", "b.flac\na.flac\n")
+    plan = client.post(
+        "/api/operations/preview",
+        json={
+            "albumIds": [a["id"] for a in albums.values()],
+            "action": "move",
+            "destinationZone": "Bibliothèque",
+        },
+    ).json()
+    assert (
+        client.post("/api/operations/apply", json={"token": plan["token"]}).status_code
+        == 200
+    )
+    m.scan()
+    result = client.get("/api/playlist-files/" + pid).json()
+    assert result["ready"] == 2
+    assert [i["track"]["album"] for i in result["items"]] == ["Album B", "Album A"]
+    op = client.get("/api/history").json()["items"][0]
+    assert (
+        client.post("/api/history/" + op["id"] + "/restore", json={}).status_code == 200
+    )
+    m.scan()
+    assert client.get("/api/playlist-files/" + pid).json()["ready"] == 1
+
+
+def test_download_playlist_follows_directory_move(client):
+    a, root = seed()
+    playlist_root = m.ROOTS["Téléchargements"] / "Playlists"
+    playlist_root.mkdir()
+    pid = playlist_source(playlist_root / "Mix.m3u", "../Artist/Album/Song.wav\n")
+    plan = client.post(
+        "/api/operations/preview",
+        json={
+            "albumIds": [a["id"]],
+            "action": "move",
+            "destinationZone": "Bibliothèque",
+        },
+    ).json()
+    assert (
+        client.post("/api/operations/apply", json={"token": plan["token"]}).status_code
+        == 200
+    )
+    m.scan()
+    assert client.get("/api/playlist-files/" + pid).json()["ready"] == 1
+
+
+def test_playlist_never_opens_remote_outside_or_symlink_entries(client):
+    root, _ = compilation_fixture()
+    outside = root.parent.parent.parent / "outside.wav"
+    outside.write_text("private")
+    (root / "link.flac").symlink_to(outside)
+    pid = playlist_source(
+        root / "Mix.m3u8",
+        "https://example.com/private\n../../../../outside.wav\nlink.flac\nC:\\Music\\song.flac\n",
+    )
+    result = client.get("/api/playlist-files/" + pid).json()
+    assert result["ready"] == 0
+    assert [i["status"] for i in result["items"]] == [
+        "unsupported",
+        "missing",
+        "missing",
+        "unsupported",
+    ]
+    assert all(i["track"] is None for i in result["items"])
+    (root / "secret.m3u8").symlink_to(outside)
+    assert len(client.get("/api/playlist-files").json()["items"]) == 1
+
+
+def test_playlist_import_refuses_partial_and_requires_session(client, monkeypatch):
+    root, _ = compilation_fixture()
+    pid = playlist_source(root / "Mix.m3u8", "a.flac\nmissing.flac\n")
+    with m.db() as c:
+        c.execute("UPDATE sessions SET credentials=?", (json.dumps({"u": "patrick"}),))
+
+    async def create(*args, **kwargs):
+        raise AssertionError("Must not send partial playlist")
+
+    monkeypatch.setattr(m, "create_navidrome_playlist", create)
+    assert (
+        client.post(
+            "/api/playlist-files/import", json={"sourceId": pid, "name": "Mix"}
+        ).status_code
+        == 409
+    )
+    client.cookies.clear()
+    assert (
+        client.post(
+            "/api/playlist-files/import", json={"sourceId": pid, "name": "Mix"}
+        ).status_code
+        == 401
+    )
+    assert client.get("/api/navidrome/playlists").status_code == 401
+
+
+def test_pls_entries_use_numeric_order_and_utf8(client):
+    root, _ = compilation_fixture()
+    pid = playlist_source(
+        root / "Été.pls",
+        "[playlist]\nFile10=b.flac\nTitle10=Song\nFile2=a.flac\nNumberOfEntries=2\nVersion=2\n",
+    )
+    result = client.get("/api/playlist-files/" + pid).json()
+    assert result["name"] == "Été"
+    assert [i["entry"] for i in result["items"]] == ["a.flac", "b.flac"]
+
+
+def test_playlist_import_updates_previous_import_and_preserves_duplicates(
+    client, monkeypatch
+):
+    _, root = seed("Bibliothèque")
+    pid = playlist_source(root / "Mix.m3u8", "Song.wav\nSong.wav\n")
+    with m.db() as c:
+        c.execute("UPDATE sessions SET credentials=?", (json.dumps({"u": "patrick"}),))
+    calls = []
+
+    async def create(body, credentials, playlist_id=None):
+        calls.append((body.trackIds, playlist_id, credentials["u"]))
+        return {"playlist": {"id": "created", "songCount": 2}, "verified": True}
+
+    monkeypatch.setattr(m, "create_navidrome_playlist", create)
+    for _ in range(2):
+        result = client.post(
+            "/api/playlist-files/import", json={"sourceId": pid, "name": "Mix"}
+        )
+        assert result.status_code == 200, result.text
+    assert calls[0][0][0] == calls[0][0][1]
+    assert calls[0][1] is None and calls[1][1] == "created"
+
+
+def test_playlist_verification_rejects_unreadable_result(client, monkeypatch):
+    import asyncio
+
+    a, _ = seed("Bibliothèque")
+    track = m.album_tracks(a["id"])[0]
+
+    async def nav(endpoint, params=None, credentials=None):
+        if endpoint == "getAlbumList2":
+            return {"albumList2": {"album": [{"id": "a", "name": track["album"]}]}}
+        if endpoint == "getAlbum":
+            return {"album": {"song": [{"id": "song", "path": track["rel"]}]}}
+        if endpoint == "createPlaylist":
+            return {"playlist": {"id": "created"}}
+        if endpoint == "getPlaylist":
+            return {"playlist": {"id": "created", "entry": []}}
+        if endpoint == "getPlaylists":
+            return {"playlists": {"playlist": []}}
+        raise AssertionError(endpoint)
+
+    async def digest(*args):
+        with m.db() as c:
+            return c.execute(
+                "SELECT digest FROM tracks WHERE id=?", (track["id"],)
+            ).fetchone()[0]
+
+    monkeypatch.setattr(m, "nav_call", nav)
+    monkeypatch.setattr(m, "nav_download_digest", digest)
+    with pytest.raises(m.HTTPException) as exc:
+        asyncio.run(
+            m.create_navidrome_playlist(
+                m.Playlist(name="Test", trackIds=[track["id"]]), {"u": "patrick"}
+            )
+        )
+    assert exc.value.status_code == 502

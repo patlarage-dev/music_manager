@@ -2770,3 +2770,67 @@ audio {
     bottom: calc(220px + env(safe-area-inset-bottom));
   }
 }
+
+.playlist-workspace {
+  display: grid;
+  gap: 40px;
+  max-width: 1000px;
+}
+.playlist-workspace section > p {
+  max-width: 75ch;
+}
+.playlist-workspace .field {
+  margin: 18px 0;
+}
+.playlist-import-form {
+  margin-bottom: 20px;
+}
+.playlist-import-tracks {
+  padding-left: 24px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+.playlist-import-tracks li {
+  padding: 10px 4px;
+  border-bottom: 1px solid #344150;
+  overflow-wrap: anywhere;
+}
+.playlist-import-tracks small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+}
+.nav-playlist-list {
+  list-style: none;
+  margin: 20px 0;
+  padding: 0;
+}
+.nav-playlist-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid #344150;
+}
+.nav-playlist-list li svg {
+  flex-shrink: 0;
+}
+.nav-playlist-list li strong {
+  flex: 1;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.nav-playlist-list li > span {
+  color: var(--muted);
+  white-space: nowrap;
+}
+.playlist-workspace select,
+.playlist-workspace input {
+  width: 100%;
+  min-width: 0;
+}
+.playlist-workspace details summary {
+  cursor: pointer;
+  min-height: 44px;
+  padding: 12px 0;
+}

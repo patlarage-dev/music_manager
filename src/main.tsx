@@ -45,6 +45,7 @@ import {
 } from "./api";
 import "./style.css";
 import { InstallApp } from "./pwa";
+import { Playlists } from "./Playlists";
 const pages = [
   "Tableau de bord",
   "Explorateur",
@@ -55,6 +56,7 @@ const pages = [
   "Radio locale",
   "Historique et corbeille",
   "Paramètres",
+  "Playlists",
 ];
 const routes = [
   "accueil",
@@ -66,6 +68,7 @@ const routes = [
   "radio",
   "historique",
   "parametres",
+  "playlists",
 ];
 const icons = [
   LayoutDashboard,
@@ -77,6 +80,7 @@ const icons = [
   Radio,
   History,
   Settings,
+  ListMusic,
 ];
 const zones = ["Téléchargements", "Bibliothèque", "Quarantaine"];
 function pageFromHash() {
@@ -494,6 +498,7 @@ function App() {
                     "Une sélection composée de vos propres morceaux.",
                     "Chaque déplacement garde une trace et un chemin de retour.",
                     "Votre bibliothèque et vos connexions.",
+                    "Importez vos compilations et retrouvez vos playlists Navidrome.",
                   ][page]
                 }
               </p>
@@ -875,6 +880,7 @@ function App() {
           {page === 6 && (
             <RadioPanel artists={artistList.data?.items || []} tell={tell} />
           )}
+          {page === 9 && <Playlists revision={revision} />}
           {page === 7 && (
             <HistoryPanel revision={revision} refresh={refresh} tell={tell} />
           )}
@@ -1492,11 +1498,13 @@ function RadioPanel({
   const [artist, setArtist] = useState(""),
     [songs, setSongs] = useState<Song[]>([]),
     [loading, setLoading] = useState(false),
-    [error, setError] = useState("");
+    [error, setError] = useState(""),
+    [saved, setSaved] = useState("");
   const seed = artist || artists[0] || "";
   const generate = async () => {
     setLoading(true);
     setError("");
+    setSaved("");
     try {
       setSongs(
         (
@@ -1519,7 +1527,8 @@ function RadioPanel({
       <h2>Vos disques, un autre chemin.</h2>
       <p>
         Une sélection locale, à partir d’un artiste et des genres présents dans
-        votre collection.
+        votre collection. Enregistrez-la ensuite dans Navidrome pour l’écouter
+        dans Substreamer.
       </p>
       <label>
         Artiste de départ
@@ -1528,6 +1537,7 @@ function RadioPanel({
           onChange={(e) => {
             setArtist(e.target.value);
             setSongs([]);
+            setSaved("");
           }}
         >
           {artists.map((a) => (
@@ -1579,25 +1589,39 @@ function RadioPanel({
               onClick={async () => {
                 setLoading(true);
                 try {
-                  await api("/navidrome/playlist", {
+                  setError("");
+                  const result = await api<{
+                    username: string;
+                    playlist: { songCount: number };
+                  }>("/navidrome/playlist", {
                     name: `Music Manager — ${seed}`,
                     trackIds: songs.map((t) => t.id),
                   });
-                  tell(
-                    "Playlist créée dans Navidrome. Retrouvez-la aussi dans Amperfy.",
+                  setSaved(
+                    `${result.playlist.songCount} pistes enregistrées et vérifiées dans Navidrome pour ${result.username}. Retrouvez la playlist dans Playlists, puis actualisez Substreamer sur ce même compte.`,
                   );
+                  tell("Playlist enregistrée et vérifiée dans Navidrome.");
                 } catch (e) {
                   setError((e as Error).message);
                 } finally {
                   setLoading(false);
                 }
               }}
-              disabled={loading}
+              disabled={loading || !!saved}
             >
               <ListMusic size={17} />
-              Envoyer à Navidrome
+              {loading
+                ? "Enregistrement et vérification…"
+                : saved
+                  ? "Enregistrée dans Navidrome"
+                  : "Enregistrer dans Navidrome"}
             </button>
           </div>
+          {saved && (
+            <p className="scan-notice" role="status">
+              {saved} <a href="#playlists">Voir les playlists</a>
+            </p>
+          )}
           {songs.map((t, i) => (
             <div className="playlist-row" key={t.id}>
               <span>{i + 1}</span>
@@ -1997,10 +2021,10 @@ function ManageDialog({
             </label>
           )}
           <p className="muted">
-            Le dossier complet est déplacé lorsqu’il appartient à un seul album, y
-            compris ses pochettes. Dans une compilation ou un dossier partagé,
-            seuls les fichiers des albums sélectionnés sont déplacés, en conservant
-            leurs tags. Aucune destination existante n’est écrasée.
+            Le dossier complet est déplacé lorsqu’il appartient à un seul album,
+            y compris ses pochettes. Dans une compilation ou un dossier partagé,
+            seuls les fichiers des albums sélectionnés sont déplacés, en
+            conservant leurs tags. Aucune destination existante n’est écrasée.
           </p>
           <button className="primary" disabled={busy}>
             {busy ? "Vérification…" : "Prévisualiser l’opération"}

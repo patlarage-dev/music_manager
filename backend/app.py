@@ -1461,9 +1461,240 @@ def radio(artist: str):
     }
 
 
+PLAYLIST_EXTENSIONS = {".m3u", ".m3u8", ".pls"}
+PLAYLIST_LIMIT = 2000
+
+
+def playlist_sources():
+    result = {}
+    for zone in ("Téléchargements", "Bibliothèque"):
+        root = ROOTS[zone]
+        if not root.is_dir() or root.is_symlink():
+            continue
+        for directory, dirs, files in os.walk(root, followlinks=False):
+            dirs[:] = [
+                d
+                for d in dirs
+                if not d.startswith(".") and not (Path(directory) / d).is_symlink()
+            ]
+            for name in files:
+                if (
+                    name.startswith(".")
+                    or Path(name).suffix.lower() not in PLAYLIST_EXTENSIONS
+                ):
+                    continue
+                path = Path(directory) / name
+                rel = path.relative_to(root).as_posix()
+                try:
+                    safe_path(zone, rel)
+                    if not path.is_file():
+                        continue
+                except HTTPException:
+                    continue
+                pid = identifier(zone + "/" + rel)
+                result[pid] = {
+                    "id": pid,
+                    "name": (
+                        path.parent.name
+                        if path.stem.casefold() == "playlist" and path.parent != root
+                        else path.stem
+                    ),
+                    "zone": zone,
+                    "rel": rel,
+                    "path": path,
+                }
+    return result
+
+
+def read_playlist(path):
+    if path.stat().st_size > 2_000_000:
+        raise HTTPException(400, "Playlist trop volumineuse (2 Mo maximum).")
+    raw = path.read_bytes()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        if path.suffix.lower() == ".m3u8":
+            raise HTTPException(400, "Ce fichier M3U8 n’est pas encodé en UTF-8.")
+        text = raw.decode("cp1252")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if path.suffix.lower() == ".pls":
+        numbered = []
+        for line in lines:
+            match = re.match(r"File(\d+)=(.*)", line, re.I)
+            if match:
+                numbered.append((int(match[1]), match[2].strip()))
+        entries = [value for _, value in sorted(numbered)]
+    else:
+        entries = [line for line in lines if not line.startswith("#")]
+    if not entries or len(entries) > PLAYLIST_LIMIT:
+        raise HTTPException(
+            400, f"Une playlist doit contenir entre 1 et {PLAYLIST_LIMIT} pistes."
+        )
+    return entries
+
+
+def resolve_playlist(pid):
+    source = playlist_sources().get(pid)
+    if not source:
+        raise HTTPException(
+            404, "Fichier de playlist introuvable. Actualisez la liste."
+        )
+    entries = read_playlist(source["path"])
+    with db() as c:
+        rows = [dict(r) for r in c.execute("SELECT * FROM tracks")]
+        moves = [
+            dict(r)
+            for r in c.execute(
+                "SELECT source,target FROM operations WHERE status='applied' AND action IN ('move','move_file','rename') ORDER BY created DESC"
+            )
+        ]
+    by_path = {ROOTS[r["zone"]] / r["rel"]: r for r in rows}
+    library_hashes = defaultdict(list)
+    for r in rows:
+        if r["zone"] == "Bibliothèque":
+            library_hashes[r["digest"]].append(r)
+
+    def allowed(path):
+        return any(path.is_relative_to(root) for root in ROOTS.values()) and not any(
+            p.is_symlink() for p in [path, *path.parents]
+        )
+
+    def current(row):
+        path = ROOTS[row["zone"]] / row["rel"]
+        if not allowed(path) or not path.is_file():
+            return False
+        st = path.stat()
+        return st.st_size == row["size"] and st.st_mtime == row["mtime"]
+
+    items = []
+    for entry in entries:
+        normalized = entry.replace("\\", "/")
+        # Never open network addresses or arbitrary host paths from a playlist.
+        if "://" in normalized or re.match(r"^[A-Za-z]:", normalized):
+            items.append({"entry": entry, "status": "unsupported", "track": None})
+            continue
+        candidates = []
+        if normalized.startswith("/music/"):
+            candidates.append(ROOTS["Bibliothèque"] / normalized[len("/music/") :])
+        elif normalized.startswith("/mnt/media/"):
+            candidates.append(MEDIA / normalized[len("/mnt/media/") :])
+        else:
+            candidates.append(
+                Path(normalized)
+                if normalized.startswith("/")
+                else source["path"].parent / normalized
+            )
+        path = Path(os.path.abspath(candidates[0]))
+        row = None
+        visited = set()
+        for _ in range(32):
+            if not allowed(path) or path in visited:
+                break
+            visited.add(path)
+            if path in by_path and current(by_path[path]):
+                row = by_path[path]
+                break
+            # An existing, unindexed file must be analysed before matching it.
+            if path.exists():
+                break
+            move = next(
+                (
+                    m
+                    for m in moves
+                    if path == Path(m["source"])
+                    or path.is_relative_to(Path(m["source"]))
+                ),
+                None,
+            )
+            if not move:
+                break
+            path = Path(move["target"]) / path.relative_to(Path(move["source"]))
+        if row:
+            if row["zone"] != "Bibliothèque":
+                row = next(
+                    (r for r in library_hashes[row["digest"]] if current(r)), row
+                )
+            status = "ready" if row["zone"] == "Bibliothèque" else "incoming"
+            track = json.loads(row["payload"])
+        else:
+            status, track = "missing", None
+        items.append({"entry": entry, "status": status, "track": track})
+    return {k: v for k, v in source.items() if k != "path"} | {
+        "items": items,
+        "total": len(items),
+        "ready": sum(i["status"] == "ready" for i in items),
+    }
+
+
+@app.get("/api/playlist-files")
+def playlist_files():
+    return {
+        "items": [
+            {k: v for k, v in source.items() if k != "path"}
+            for source in playlist_sources().values()
+        ]
+    }
+
+
+@app.get("/api/playlist-files/{pid}")
+def playlist_file(pid: str):
+    with MUTEX:
+        return resolve_playlist(pid)
+
+
+class ImportPlaylist(BaseModel):
+    sourceId: str
+    name: str = Field(min_length=1, max_length=120)
+
+
+def session_credentials(request):
+    account = user(request)
+    if not account.get("credentials"):
+        raise HTTPException(401, "Reconnectez votre compte Navidrome.")
+    return json.loads(account["credentials"])
+
+
+@app.post("/api/playlist-files/import")
+async def import_playlist(body: ImportPlaylist, request: Request):
+    credentials = session_credentials(request)
+    with MUTEX:
+        resolved = resolve_playlist(body.sourceId)
+    if resolved["ready"] != resolved["total"]:
+        raise HTTPException(
+            409,
+            "Certaines pistes sont absentes de Bibliothèque. Déplacez-les depuis l’Explorateur puis relancez l’analyse. Aucun import partiel n’a été effectué.",
+        )
+    key = identifier(credentials["u"] + "/" + body.sourceId)
+    imported = setting("playlistImports", {})
+    previous = imported.get(key)
+    result = await create_navidrome_playlist(
+        Playlist(
+            name=body.name, trackIds=[i["track"]["id"] for i in resolved["items"]]
+        ),
+        credentials,
+        playlist_id=previous,
+    )
+    with MUTEX:
+        imported = setting("playlistImports", {})
+        imported[key] = result["playlist"]["id"]
+        save_setting("playlistImports", imported)
+    return result
+
+
+@app.get("/api/navidrome/playlists")
+async def nav_playlists(request: Request):
+    credentials = session_credentials(request)
+    response = await nav_call("getPlaylists", credentials=credentials)
+    return {
+        "items": response.get("playlists", {}).get("playlist", []),
+        "username": credentials["u"],
+        "url": PUBLIC_NAV,
+    }
+
+
 class Playlist(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    trackIds: list[str] = Field(min_length=1, max_length=100)
+    trackIds: list[str] = Field(min_length=1, max_length=PLAYLIST_LIMIT)
 
 
 @app.post("/api/navidrome/playlist")
@@ -1502,7 +1733,7 @@ async def nav_download_digest(song_id: str, credentials):
     return digest.hexdigest()
 
 
-async def create_navidrome_playlist(body: Playlist, credentials):
+async def create_navidrome_playlist(body: Playlist, credentials, playlist_id=None):
     async def call(endpoint, params=None):
         return await nav_call(endpoint, params, credentials)
 
@@ -1511,6 +1742,8 @@ async def create_navidrome_playlist(body: Playlist, credentials):
             "SELECT id,digest,mtime,size,payload FROM tracks WHERE zone=?",
             ("Bibliothèque",),
         ).fetchall()
+    requested = set(body.trackIds)
+    rows = [r for r in rows if r["id"] in requested]
     own = {r["id"]: json.loads(r["payload"]) for r in rows}
     if any(tid not in own for tid in body.trackIds):
         raise HTTPException(
@@ -1597,11 +1830,33 @@ async def create_navidrome_playlist(body: Playlist, credentials):
             409,
             "Certaines pistes ne correspondent pas aux fichiers indexés par Navidrome. Lancez son analyse puis réessayez. Aucun autre enregistrement n’a été substitué.",
         )
-    result = await call(
-        "createPlaylist",
-        {"name": body.name, "songId": [mapping[tid] for tid in body.trackIds]},
-    )
-    return {"playlist": result.get("playlist"), "url": PUBLIC_NAV}
+    song_ids = [mapping[tid] for tid in body.trackIds]
+    params = {"name": body.name, "songId": song_ids}
+    if playlist_id:
+        params["playlistId"] = playlist_id
+    result = await call("createPlaylist", params)
+    created = result.get("playlist", {})
+    if not created.get("id"):
+        raise HTTPException(
+            502, "Navidrome n’a pas confirmé la création de la playlist."
+        )
+    if playlist_id:
+        await call("updatePlaylist", {"playlistId": created["id"], "name": body.name})
+    verified = (await call("getPlaylist", {"id": created["id"]})).get("playlist", {})
+    visible = (await call("getPlaylists")).get("playlists", {}).get("playlist", [])
+    if [song.get("id") for song in verified.get("entry", [])] != song_ids or not any(
+        p.get("id") == created["id"] for p in visible
+    ):
+        raise HTTPException(
+            502,
+            "La playlist a été envoyée, mais sa lecture dans Navidrome n’est pas confirmée. Actualisez Playlists avant de réessayer.",
+        )
+    return {
+        "playlist": verified,
+        "url": PUBLIC_NAV,
+        "username": credentials["u"],
+        "verified": True,
+    }
 
 
 @app.post("/api/navidrome/scan")

@@ -13,7 +13,8 @@ Navigation mobile en bas de l’écran : Accueil, Albums, Explorateur et Plus. N
 - Recherche, filtres de genre/format/état et pagination des albums. Dans l’explorateur, les actions de sélection sont disponibles avant et après la liste, et restent visibles en bas lorsqu’une sélection existe. La sélection est conservée entre les filtres/pages (20 albums maximum par opération).
 - Complétude d’après les totaux des tags et comparaison d’une édition MusicBrainz choisie explicitement.
 - Doublons par SHA-256 et versions portant le même artiste/titre à comparer, sans suppression automatique.
-- Radio locale à partir de l’artiste et des genres présents, export M3U et création de playlist Navidrome.
+- Radio locale à partir de l’artiste et des genres présents, export M3U et enregistrement dans Navidrome avec vérification de la lecture et de la visibilité par l’API Subsonic.
+- Page Playlists : détection des fichiers M3U/M3U8/PLS dans Téléchargements et Bibliothèque, aperçu avant import, ordre et répétitions conservés. Les déplacements effectués par Music Manager sont suivis. Toutes les pistes doivent être disponibles dans Bibliothèque ; aucun import partiel ni recherche par titre approximatif. Un nouvel envoi du même fichier met à jour la playlist importée pour ce compte.
 - Suggestions similaires via Navidrome et, à défaut, artistes locaux partageant un genre. Suivis persistants.
 - Déplacement, renommage et corbeille d’albums après prévisualisation ; historique et restauration sans écrasement.
 - Édition des tags d’album (artiste de l’album, nom, année, genre), copie complète avant écriture et restauration.
@@ -22,7 +23,7 @@ Navigation mobile en bas de l’écran : Accueil, Albums, Explorateur et Plus. N
 
 Dans **Paramètres → Connexion Navidrome**, saisir son compte Navidrome actuel. Aucun mot de passe à transmettre au développeur. Le mot de passe sert à produire les identifiants Subsonic ; seuls le nom et le couple sel/empreinte sont conservés dans le volume privé `state/`. Ce couple reste un secret équivalent à des identifiants. Les opérations Navidrome utilisent les identifiants de la session concernée. Les éditions de fichiers exigent un rôle administrateur Navidrome et une confirmation à l’écran.
 
-Amperfy utilise les playlists du même serveur Navidrome. Il faut rafraîchir sa bibliothèque/playlists après création.
+Substreamer et Amperfy utilisent les playlists du même serveur et du même compte Navidrome. La page **Playlists → Dans Navidrome** affiche la liste renvoyée directement par cette API. La création d’une sélection radio reste locale jusqu’au bouton **Enregistrer dans Navidrome**. Si une playlist visible ici manque dans le lecteur, vérifier l’adresse du serveur, le compte, le mode hors ligne et la synchronisation du lecteur.
 
 ## Développement local
 
