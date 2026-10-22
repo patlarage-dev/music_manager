@@ -875,8 +875,13 @@ class Operation(BaseModel):
 
 
 def snapshot(path):
+    if path.is_symlink():
+        raise HTTPException(400, "Les liens symboliques ne sont pas autorisés.")
+    if path.is_file():
+        st = path.stat()
+        return [[path.name, st.st_size, st.st_mtime_ns]]
     if not path.is_dir():
-        raise HTTPException(400, "Seuls les dossiers d’album peuvent être déplacés.")
+        raise HTTPException(400, "Fichier ou dossier indisponible.")
     result = []
     for directory, dirs, files in os.walk(path, followlinks=False):
         for name in dirs + files:
@@ -904,8 +909,83 @@ def preview(body: Operation, request: Request):
         plan = []
         sources = set()
         targets = set()
+        with db() as c:
+            compilation_folders = {
+                Path(r["source"]).parent
+                for r in c.execute(
+                    "SELECT source FROM operations WHERE action='move_file'"
+                )
+            }
         for aid in dict.fromkeys(body.albumIds):
             a = album(aid)
+            # A compilation/download playlist can contain several logical albums.
+            # Move only the indexed files belonging to the selected album in that case.
+            shared_folder = (
+                a["folder"] == "."
+                or ROOTS[a["zone"]] / a["folder"] in compilation_folders
+                or any(
+                    other["id"] != aid
+                    and other["zone"] == a["zone"]
+                    and (
+                        other["folder"] == a["folder"]
+                        or Path(other["folder"]).is_relative_to(Path(a["folder"]))
+                    )
+                    for other in all_albums()
+                )
+            )
+            if body.action == "move" and shared_folder:
+                if body.destinationZone not in ROOTS:
+                    raise HTTPException(400, "Destination inconnue.")
+                if body.destinationZone == a["zone"]:
+                    raise HTTPException(
+                        400, "Choisissez un autre espace pour déplacer ces fichiers."
+                    )
+
+                def component(value):
+                    value = re.sub(r"[/\\\x00\r\n]", "_", value).strip()[:180]
+                    return clean_name(
+                        value
+                        if value
+                        and value not in (".", "..")
+                        and not value.startswith(".")
+                        else "_" + value.lstrip(".")
+                    )
+
+                songs = album_tracks(aid)
+                if not songs:
+                    raise HTTPException(
+                        409, "Aucune piste indexée pour cet album. Relancez l’analyse."
+                    )
+                for song in songs:
+                    source = safe_path(a["zone"], song["rel"])
+                    if not source.is_file():
+                        raise HTTPException(
+                            409, "Une piste n’est plus un fichier. Relancez l’analyse."
+                        )
+                    target = safe_path(
+                        body.destinationZone,
+                        f"{component(a['artist'])}/{component(a['title'])}/{source.name}",
+                        False,
+                    )
+                    if source in sources or target in targets or target.exists():
+                        raise HTTPException(
+                            409,
+                            "La destination existe déjà. Aucun fichier ne sera écrasé.",
+                        )
+                    sources.add(source)
+                    targets.add(target)
+                    plan.append(
+                        {
+                            "source": str(source),
+                            "target": str(target),
+                            "snapshot": snapshot(source),
+                            "album": a["title"],
+                            "zone": a["zone"],
+                            "folder": song["rel"],
+                            "fileOnly": True,
+                        }
+                    )
+                continue
             source = safe_path(a["zone"], a["folder"])
             if any(
                 source == p or source.is_relative_to(p) or p.is_relative_to(source)
@@ -1040,7 +1120,7 @@ def apply(body: Apply, request: Request):
                         (
                             oid,
                             now(),
-                            plan["action"],
+                            "move_file" if item.get("fileOnly") else plan["action"],
                             str(source),
                             str(target),
                             "pending",
@@ -1138,8 +1218,8 @@ def restore(oid: str, request: Request):
                 raise HTTPException(
                     409, "Le chemin d’origine est occupé. Aucun fichier écrasé."
                 )
-            if not target.is_dir():
-                raise HTTPException(409, "Le dossier à restaurer est introuvable.")
+            if not (target.is_dir() or target.is_file()):
+                raise HTTPException(409, "L’élément à restaurer est introuvable.")
             source.parent.mkdir(parents=True, exist_ok=True)
             c.execute("UPDATE operations SET status='restoring' WHERE id=?", (oid,))
             c.commit()

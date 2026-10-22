@@ -1673,6 +1673,7 @@ function HistoryPanel({
                 {
                   trash: "Mise à la corbeille",
                   move: "Déplacement",
+                  move_file: "Déplacement d’une piste",
                   rename: "Renommage",
                   metadata: "Modification des tags",
                 } as Record<string, string>
@@ -1996,8 +1997,10 @@ function ManageDialog({
             </label>
           )}
           <p className="muted">
-            Le dossier complet de chaque album est concerné, y compris ses
-            pochettes. Aucune destination existante n’est écrasée.
+            Le dossier complet est déplacé lorsqu’il appartient à un seul album, y
+            compris ses pochettes. Dans une compilation ou un dossier partagé,
+            seuls les fichiers des albums sélectionnés sont déplacés, en conservant
+            leurs tags. Aucune destination existante n’est écrasée.
           </p>
           <button className="primary" disabled={busy}>
             {busy ? "Vérification…" : "Prévisualiser l’opération"}

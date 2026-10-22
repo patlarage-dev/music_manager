@@ -466,12 +466,165 @@ def test_playlist_never_substitutes_same_title_with_other_audio(client, monkeypa
 
 
 def test_album_filters_are_applied_before_pagination(client):
-    values=[('a','Rock','FLAC, MP3','incomplete'),('b','Jazz','FLAC','unknown'),('c','Rock','MP3','complete')]
+    values = [
+        ("a", "Rock", "FLAC, MP3", "incomplete"),
+        ("b", "Jazz", "FLAC", "unknown"),
+        ("c", "Rock", "MP3", "complete"),
+    ]
     with m.db() as c:
-        for aid,genre,format,state in values:
-            album={'id':aid,'artist':'Artist','title':aid,'year':2000,'genre':genre,'format':format,'completeness':state,'zone':'Bibliothèque'}
-            c.execute('INSERT INTO albums VALUES (?,?)',(aid,json.dumps(album)))
-    response=client.get('/api/albums',params={'genre':'Rock','format':'MP3','state':'incomplete','limit':1})
-    assert response.status_code==200
-    payload=response.json();assert payload['total']==1;assert [a['id'] for a in payload['items']]==['a'];assert payload['formats']==['FLAC','MP3']
-    assert client.get('/api/albums',params={'format':'AAC'}).json()['total']==0
+        for aid, genre, format, state in values:
+            album = {
+                "id": aid,
+                "artist": "Artist",
+                "title": aid,
+                "year": 2000,
+                "genre": genre,
+                "format": format,
+                "completeness": state,
+                "zone": "Bibliothèque",
+            }
+            c.execute("INSERT INTO albums VALUES (?,?)", (aid, json.dumps(album)))
+    response = client.get(
+        "/api/albums",
+        params={"genre": "Rock", "format": "MP3", "state": "incomplete", "limit": 1},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert [a["id"] for a in payload["items"]] == ["a"]
+    assert payload["formats"] == ["FLAC", "MP3"]
+    assert client.get("/api/albums", params={"format": "AAC"}).json()["total"] == 0
+
+
+def compilation_fixture(folder="My compilation"):
+    from mutagen.flac import FLAC
+
+    root = m.ROOTS["Téléchargements"] / folder if folder else m.ROOTS["Téléchargements"]
+    root.mkdir(parents=True, exist_ok=True)
+    info = (
+        struct.pack(">HH", 4096, 4096)
+        + b"\0" * 6
+        + (((8000 << 44) | (15 << 36) | 8000).to_bytes(8, "big"))
+        + b"\0" * 16
+    )
+    for name, artist, album in [
+        ("a.flac", "Artist A", "Album A"),
+        ("b.flac", "Artist B", "Album B"),
+    ]:
+        path = root / name
+        path.write_bytes(b"fLaC" + b"\x80\x00\x00\x22" + info)
+        audio = FLAC(path)
+        audio["artist"] = artist
+        audio["albumartist"] = artist
+        audio["album"] = album
+        audio["title"] = name
+        audio["tracknumber"] = "1"
+        audio.save()
+    (root / "cover.jpg").write_bytes(b"shared cover")
+    m.scan()
+    return root, {a["title"]: a for a in m.all_albums()}
+
+
+def test_compilation_moves_only_selected_album_files_and_restores(client):
+    root, albums = compilation_fixture()
+    original = (root / "a.flac").read_bytes()
+    response = client.post(
+        "/api/operations/preview",
+        json={"albumIds": [albums["Album A"]["id"]], "action": "move"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["items"][0]["files"] == 1
+    target = m.ROOTS["Bibliothèque"] / "Artist A" / "Album A" / "a.flac"
+    assert response.json()["items"][0]["target"].endswith("/Artist A/Album A/a.flac")
+    assert (
+        client.post(
+            "/api/operations/apply", json={"token": response.json()["token"]}
+        ).status_code
+        == 200
+    )
+    assert target.read_bytes() == original
+    assert (root / "b.flac").exists()
+    assert (root / "cover.jpg").exists()
+    assert not (root / "a.flac").exists()
+    op = client.get("/api/history").json()["items"][0]
+    assert op["action"] == "move_file"
+    assert (
+        client.post("/api/history/" + op["id"] + "/restore", json={}).status_code == 200
+    )
+    assert (root / "a.flac").read_bytes() == original
+    assert not target.exists()
+
+
+def test_last_album_in_a_compilation_keeps_file_level_destination(client):
+    root, albums = compilation_fixture()
+    plan = client.post(
+        "/api/operations/preview",
+        json={"albumIds": [albums["Album A"]["id"]], "action": "move"},
+    ).json()
+    assert (
+        client.post("/api/operations/apply", json={"token": plan["token"]}).status_code
+        == 200
+    )
+    m.scan()
+    remaining = next(a for a in m.all_albums() if a["title"] == "Album B")
+    plan = client.post(
+        "/api/operations/preview",
+        json={"albumIds": [remaining["id"]], "action": "move"},
+    )
+    assert plan.status_code == 200, plan.text
+    assert plan.json()["items"][0]["target"].endswith("/Artist B/Album B/b.flac")
+
+
+def test_loose_downloaded_tracks_can_be_moved(client):
+    root, albums = compilation_fixture("")
+    plan = client.post(
+        "/api/operations/preview",
+        json={"albumIds": [albums["Album A"]["id"]], "action": "move"},
+    )
+    assert plan.status_code == 200, plan.text
+    assert (
+        client.post(
+            "/api/operations/apply", json={"token": plan.json()["token"]}
+        ).status_code
+        == 200
+    )
+    assert (root / "b.flac").exists()
+    assert not (root / "a.flac").exists()
+
+
+def test_compilation_refuses_collision_but_can_complete_an_existing_album_folder(
+    client,
+):
+    root, albums = compilation_fixture()
+    target = m.ROOTS["Bibliothèque"] / "Artist A" / "Album A"
+    target.mkdir(parents=True)
+    (target / "another.flac").write_bytes(b"keep existing")
+    body = {"albumIds": [albums["Album A"]["id"]], "action": "move"}
+    assert client.post("/api/operations/preview", json=body).status_code == 200
+    (target / "a.flac").write_bytes(b"keep collision")
+    assert client.post("/api/operations/preview", json=body).status_code == 409
+    assert (root / "a.flac").exists()
+    assert (target / "a.flac").read_bytes() == b"keep collision"
+
+
+def test_compilation_batch_rolls_back_files_after_failure(client, monkeypatch):
+    root, albums = compilation_fixture()
+    before = {name: (root / name).read_bytes() for name in ("a.flac", "b.flac")}
+    plan = client.post(
+        "/api/operations/preview",
+        json={"albumIds": [a["id"] for a in albums.values()], "action": "move"},
+    ).json()
+    original = m.rename_noreplace
+
+    def fail_second(source, target):
+        if source == root / "b.flac":
+            raise OSError("test interruption")
+        return original(source, target)
+
+    monkeypatch.setattr(m, "rename_noreplace", fail_second)
+    assert (
+        client.post("/api/operations/apply", json={"token": plan["token"]}).status_code
+        == 409
+    )
+    for name, data in before.items():
+        assert (root / name).read_bytes() == data
