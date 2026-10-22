@@ -2834,3 +2834,24 @@ audio {
   min-height: 44px;
   padding: 12px 0;
 }
+
+.radio-panel .radio-discovery {
+  display: block;
+  width: min(100%, 540px);
+  margin: 24px auto 12px;
+  text-align: left;
+}
+.radio-discovery input {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  accent-color: var(--accent);
+  padding: 0;
+}
+.radio-discovery > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 13px;
+  color: var(--muted);
+}

@@ -827,3 +827,149 @@ def test_playlist_verification_rejects_unreadable_result(client, monkeypatch):
             )
         )
     assert exc.value.status_code == 502
+
+
+def radio_inventory():
+    albums, tracks = [], []
+    for artist_index in range(15):
+        artist = "Seed" if artist_index == 0 else f"Artist {artist_index}"
+        for album_index in range(4):
+            aid = f"{artist_index}-{album_index}"
+            albums.append(
+                {
+                    "id": aid,
+                    "artist": artist,
+                    "genre": (
+                        "Rock alternatif; Pop"
+                        if artist_index == 0
+                        else "Alternative Rock / Pop"
+                    ),
+                    "zone": "Bibliothèque",
+                }
+            )
+            for number in range(3):
+                tid = f"{aid}-{number}"
+                tracks.append(
+                    {
+                        "payload": json.dumps(
+                            {"id": tid, "albumId": aid, "artist": artist, "title": tid}
+                        ),
+                        "digest": tid,
+                    }
+                )
+    return albums, tracks
+
+
+def test_radio_balances_artists_albums_and_guarantees_seed(client):
+    albums, tracks = radio_inventory()
+    songs = m.select_radio("seed", 50, albums, tracks, [], set())
+    from collections import Counter
+
+    assert len(songs) == 30
+    assert sum(t["artist"] == "Seed" for t in songs) == 3
+    assert max(Counter(t["artist"] for t in songs).values()) <= 3
+    assert max(Counter(t["albumId"] for t in songs).values()) <= 2
+    assert len({t["id"] for t in songs}) == 30
+
+
+def test_radio_avoids_recent_and_byte_duplicates(client):
+    albums, tracks = radio_inventory()
+    first = m.select_radio("Seed", 50, albums, tracks, [], set())
+    recent = {t["id"] for t in first}
+    second = m.select_radio("Seed", 50, albums, tracks, [], recent)
+    assert len(second) == 30
+    assert not recent.intersection(t["id"] for t in second)
+    for row in tracks:
+        row["digest"] = "identical-bytes"
+    assert len(m.select_radio("Seed", 50, albums, tracks, [], set())) == 1
+
+
+def test_radio_similar_artists_can_cross_genres_but_never_include_unrelated(client):
+    albums, tracks = radio_inventory()
+    for a in albums:
+        if a["artist"] != "Seed":
+            a["genre"] = "Classical"
+    songs = m.select_radio("Seed", 100, albums, tracks, ["Artist 1"], set())
+    assert {t["artist"] for t in songs} == {"Seed", "Artist 1"}
+    assert len(songs) == 6
+    assert m.radio_genres("Rock alternatif; HIP-HOP / Pop") == {
+        "alternative rock",
+        "hip hop",
+        "pop",
+    }
+    assert m.radio_affinity({"alternative rock"}, {"hard rock"}) > 0
+    assert m.radio_affinity({"jazz"}, {"metal"}) == 0
+
+
+def test_radio_small_collection_preserves_caps(client):
+    albums, tracks = radio_inventory()
+    albums = albums[:1]
+    songs = m.select_radio("Seed", 0, albums, tracks, [], set())
+    assert len(songs) == 2
+    assert all(t["artist"] == "Seed" for t in songs)
+
+
+def test_radio_endpoint_remembers_last_three_generations_by_account(
+    client, monkeypatch
+):
+    albums, tracks = radio_inventory()
+    with m.db() as c:
+        for a in albums:
+            c.execute("INSERT INTO albums VALUES (?,?)", (a["id"], json.dumps(a)))
+        for r in tracks:
+            t = json.loads(r["payload"])
+            c.execute(
+                "INSERT INTO tracks VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    t["id"],
+                    t["albumId"],
+                    "Bibliothèque",
+                    t["id"],
+                    0,
+                    0,
+                    r["digest"],
+                    r["payload"],
+                ),
+            )
+
+    async def similar(*args):
+        return []
+
+    monkeypatch.setattr(m, "radio_similar", similar)
+    for _ in range(4):
+        result = client.post("/api/radio", json={"artist": "Seed", "discovery": 50})
+        assert result.status_code == 200, result.text
+        assert len(result.json()["items"]) == 30
+    key = "radio-history:" + m.identifier("patrick/seed")
+    assert len(m.setting(key)) == 3
+    assert m.setting("radio-history:" + m.identifier("other/seed")) is None
+    assert (
+        client.post("/api/radio", json={"artist": "Seed", "discovery": 101}).status_code
+        == 422
+    )
+    assert client.post("/api/radio", json={"artist": "Missing"}).status_code == 404
+
+
+def test_radio_navidrome_recommendations_are_cached_and_failure_falls_back(
+    client, monkeypatch
+):
+    import asyncio
+
+    calls = []
+
+    async def nav(endpoint, params=None, credentials=None):
+        calls.append(endpoint)
+        if endpoint == "search3":
+            return {"searchResult3": {"artist": [{"id": "seed", "name": "Seed"}]}}
+        return {"artistInfo2": {"similarArtist": [{"name": "Related"}]}}
+
+    monkeypatch.setattr(m, "nav_call", nav)
+    assert asyncio.run(m.radio_similar("Seed")) == ["Related"]
+    assert asyncio.run(m.radio_similar("seed")) == ["Related"]
+    assert len(calls) == 2
+
+    async def unavailable(*args, **kwargs):
+        raise m.HTTPException(502, "Unavailable")
+
+    monkeypatch.setattr(m, "nav_call", unavailable)
+    assert asyncio.run(m.radio_similar("Other")) == []

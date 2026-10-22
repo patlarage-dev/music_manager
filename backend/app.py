@@ -1444,20 +1444,273 @@ def follow(body: Follow):
     return {"items": names}
 
 
-@app.get("/api/radio")
-def radio(artist: str):
-    values = [a for a in all_albums() if a["zone"] == "Bibliothèque"]
-    genres = {
-        a["genre"]
-        for a in values
-        if a["artist"] == artist and a["genre"] != "Non renseigné"
+def radio_key(value):
+    import unicodedata
+
+    return "".join(
+        c
+        for c in unicodedata.normalize("NFKD", value.casefold())
+        if not unicodedata.combining(c)
+    ).strip()
+
+
+def radio_genres(value):
+    aliases = {
+        "rock alternatif": "alternative rock",
+        "alternatif": "alternative",
+        "hip-hop": "hip hop",
+        "rap francais": "french hip hop",
+        "r&b": "rhythm and blues",
     }
-    candidates = [a for a in values if a["artist"] == artist or a["genre"] in genres]
-    tracks = [t for a in candidates for t in album_tracks(a["id"])]
-    random.shuffle(tracks)
+    result = set()
+    for part in re.split(r"[,;/|]+", radio_key(value)):
+        part = re.sub(r"\s+", " ", part).strip()
+        if part and part not in ("non renseigne", "unknown", "other"):
+            result.add(aliases.get(part, part))
+    return result
+
+
+def radio_affinity(seed_genres, genres):
+    overlap = seed_genres & genres
+    if overlap:
+        broad = {"rock", "pop", "metal", "jazz", "electronic", "hip hop"}
+        specificity = max(0.55 if genre in broad else 1.0 for genre in overlap)
+        return specificity * (0.75 + 0.25 * len(overlap) / len(seed_genres))
+    families = (
+        "rock",
+        "metal",
+        "pop",
+        "jazz",
+        "blues",
+        "classical",
+        "electronic",
+        "hip hop",
+        "folk",
+        "reggae",
+        "soul",
+    )
+    return (
+        0.35
+        if any(
+            any(f in g.split() or f in g for g in seed_genres)
+            and any(f in g.split() or f in g for g in genres)
+            for f in families
+        )
+        else 0.0
+    )
+
+
+async def radio_similar(artist, credentials=None):
+    key = "radio-similar:" + radio_key(artist)
+    with db() as c:
+        cached = c.execute(
+            "SELECT payload FROM cache WHERE key=? AND expires>?", (key, time.time())
+        ).fetchone()
+    if cached:
+        return json.loads(cached["payload"])
+
+    async def fetch():
+        result = await nav_call(
+            "search3",
+            {"query": artist, "artistCount": 20, "albumCount": 0, "songCount": 0},
+            credentials,
+        )
+        match = next(
+            (
+                a
+                for a in result.get("searchResult3", {}).get("artist", [])
+                if radio_key(a["name"]) == radio_key(artist)
+            ),
+            None,
+        )
+        if not match:
+            return []
+        result = await nav_call(
+            "getArtistInfo2",
+            {"id": match["id"], "count": 50, "includeNotPresent": "true"},
+            credentials,
+        )
+        return [
+            a["name"]
+            for a in result.get("artistInfo2", {}).get("similarArtist", [])
+            if a.get("name")
+        ]
+
+    try:
+        names = await asyncio.wait_for(fetch(), timeout=8)
+    except (HTTPException, asyncio.TimeoutError):
+        names = []
+    with db() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO cache VALUES (?,?,?)",
+            (key, time.time() + (86400 if names else 3600), json.dumps(names)),
+        )
+    return names
+
+
+def select_radio(artist, discovery, albums, tracks, similar, recent):
+    seed = radio_key(artist)
+    seed_albums = [a for a in albums if radio_key(a["artist"]) == seed]
+    seed_genres = (
+        set().union(*(radio_genres(a["genre"]) for a in seed_albums))
+        if seed_albums
+        else set()
+    )
+    similar = {radio_key(name) for name in similar}
+    by_album = {a["id"]: a for a in albums}
+    groups = defaultdict(list)
+    for row in tracks:
+        t = json.loads(row["payload"])
+        a = by_album.get(t["albumId"])
+        if not a:
+            continue
+        who = radio_key(t["artist"])
+        is_seed = radio_key(a["artist"]) == seed or who == seed
+        affinity = radio_affinity(seed_genres, radio_genres(a["genre"]))
+        related = who in similar or radio_key(a["artist"]) in similar
+        if not (is_seed or related or affinity):
+            continue
+        groups[who].append((t, row["digest"], is_seed, related, affinity))
+    chosen, used = [], set()
+    artist_count, album_count = defaultdict(int), defaultdict(int)
+
+    def eligible(item):
+        t, digest, *_ = item
+        return (
+            digest not in used
+            and artist_count[radio_key(t["artist"])] < 3
+            and album_count[t["albumId"]] < 2
+        )
+
+    def take(item):
+        t, digest, *_ = item
+        chosen.append(t)
+        used.add(digest)
+        artist_count[radio_key(t["artist"])] += 1
+        album_count[t["albumId"]] += 1
+
+    # Guarantee the seed, preferring tracks not heard in the last three generations.
+    seeds = [item for group in groups.values() for item in group if item[2]]
+    random.shuffle(seeds)
+    seeds.sort(key=lambda item: item[1] in recent)
+    seed_count = 0
+    for item in seeds:
+        if seed_count == 3:
+            break
+        if eligible(item):
+            take(item)
+            seed_count += 1
+    for repeat_pass in (False, True):
+        while len(chosen) < 30:
+            options = {}
+            for who, group in groups.items():
+                pool = [
+                    i
+                    for i in group
+                    if not i[2] and eligible(i) and (repeat_pass or i[1] not in recent)
+                ]
+                if pool:
+                    options[who] = pool
+            if not options:
+                break
+            # Pick artists first: a large discography must not dominate the draw.
+            weights = []
+            for who, pool in options.items():
+                relevance = max((3 if i[3] else 0) + 2 * i[4] for i in pool)
+                weights.append(
+                    (relevance ** (2.2 - 1.8 * discovery / 100))
+                    / (1 + artist_count[who]) ** 2
+                )
+            who = random.choices(list(options), weights=weights, k=1)[0]
+            pool = options[who]
+            weights = [
+                ((3 if i[3] else 0) + 2 * i[4]) ** (2.2 - 1.8 * discovery / 100)
+                for i in pool
+            ]
+            take(random.choices(pool, weights=weights, k=1)[0])
+    random.shuffle(chosen)
+    # Avoid adjacent tracks by the same artist when another order is possible.
+    for index in range(1, len(chosen)):
+        if radio_key(chosen[index]["artist"]) == radio_key(chosen[index - 1]["artist"]):
+            other = next(
+                (
+                    j
+                    for j in range(index + 1, len(chosen))
+                    if radio_key(chosen[j]["artist"])
+                    != radio_key(chosen[index - 1]["artist"])
+                ),
+                None,
+            )
+            if other is not None:
+                chosen[index], chosen[other] = chosen[other], chosen[index]
+    return chosen
+
+
+@app.get("/api/radio")
+async def preview_radio(artist: str):
+    # Compatibility for an older PWA tab: no generation history is written on GET.
+    albums = [a for a in all_albums() if a["zone"] == "Bibliothèque"]
+    if not any(radio_key(a["artist"]) == radio_key(artist) for a in albums):
+        return {"items": [], "source": "Artiste absent de Bibliothèque"}
+    names = await radio_similar(artist)
+    with db() as c:
+        tracks = [
+            dict(r)
+            for r in c.execute(
+                "SELECT payload,digest FROM tracks WHERE zone='Bibliothèque'"
+            )
+        ]
     return {
-        "items": tracks[:30],
-        "source": "Artiste et genres de votre bibliothèque uniquement",
+        "items": select_radio(artist, 50, albums, tracks, names, set()),
+        "source": "Artistes proches et genres locaux",
+    }
+
+
+class RadioRequest(BaseModel):
+    artist: str = Field(min_length=1, max_length=200)
+    discovery: int = Field(default=50, ge=0, le=100)
+
+
+@app.post("/api/radio")
+async def generate_radio(body: RadioRequest, request: Request):
+    account = user(request) if request.cookies.get("mm_session") else None
+    credentials = (
+        json.loads(account["credentials"])
+        if account and account.get("credentials")
+        else None
+    )
+    names = await radio_similar(body.artist, credentials)
+    with MUTEX:
+        albums = [a for a in all_albums() if a["zone"] == "Bibliothèque"]
+        if not any(radio_key(a["artist"]) == radio_key(body.artist) for a in albums):
+            raise HTTPException(404, "Cet artiste n’est pas présent dans Bibliothèque.")
+        with db() as c:
+            tracks = [
+                dict(r)
+                for r in c.execute(
+                    "SELECT payload,digest FROM tracks WHERE zone='Bibliothèque'"
+                )
+            ]
+        key = "radio-history:" + identifier(
+            (account["username"] if account else "local") + "/" + radio_key(body.artist)
+        )
+        history = setting(key, [])
+        recent = {digest for generation in history for digest in generation}
+        songs = select_radio(body.artist, body.discovery, albums, tracks, names, recent)
+        hashes = {json.loads(r["payload"])["id"]: r["digest"] for r in tracks}
+        if songs:
+            save_setting(key, [[hashes[t["id"]] for t in songs]] + history[:2])
+    present = {radio_key(a["artist"]) for a in albums}
+    return {
+        "items": songs,
+        "source": (
+            "Artistes proches fournis par Navidrome et genres locaux"
+            if present & {radio_key(n) for n in names}
+            else "Genres locaux : suggestions Navidrome absentes de la collection ou indisponibles"
+        ),
+        "artists": len({radio_key(t["artist"]) for t in songs}),
+        "repeated": sum(hashes[t["id"]] in recent for t in songs),
+        "limitReason": "La sélection peut contenir moins de 30 pistes pour conserver au maximum 3 titres par artiste et 2 par album.",
     }
 
 

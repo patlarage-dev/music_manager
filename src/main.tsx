@@ -1499,19 +1499,26 @@ function RadioPanel({
     [songs, setSongs] = useState<Song[]>([]),
     [loading, setLoading] = useState(false),
     [error, setError] = useState(""),
-    [saved, setSaved] = useState("");
+    [saved, setSaved] = useState(""),
+    [discovery, setDiscovery] = useState(50),
+    [explanation, setExplanation] = useState("");
   const seed = artist || artists[0] || "";
   const generate = async () => {
     setLoading(true);
     setError("");
     setSaved("");
     try {
-      setSongs(
-        (
-          await api<{ items: Song[] }>(
-            `/radio?artist=${encodeURIComponent(seed)}`,
-          )
-        ).items,
+      const result = await api<{
+        items: Song[];
+        source: string;
+        artists: number;
+        repeated: number;
+        limitReason: string;
+      }>("/radio", { artist: seed, discovery });
+      setSongs(result.items);
+      if (!result.items.length) setError("Aucune piste disponible pour cet artiste. Relancez l’analyse de Bibliothèque.");
+      setExplanation(
+        `${result.source}. ${result.artists} artistes · ${result.repeated} pistes déjà proposées récemment. ${result.items.length < 30 ? result.limitReason : "Maximum 3 titres par artiste et 2 par album."}`,
       );
     } catch (e) {
       setError((e as Error).message);
@@ -1534,6 +1541,7 @@ function RadioPanel({
         Artiste de départ
         <select
           value={seed}
+          disabled={loading}
           onChange={(e) => {
             setArtist(e.target.value);
             setSongs([]);
@@ -1545,6 +1553,31 @@ function RadioPanel({
           ))}
         </select>
       </label>
+      <label className="radio-discovery">
+        Équilibre de la sélection
+        <input
+          type="range"
+          min="0"
+          max="100"
+          step="10"
+          value={discovery}
+          disabled={loading}
+          aria-valuetext={`Niveau de découverte : ${discovery} sur 100`}
+          onChange={(e) => {
+            setDiscovery(Number(e.target.value));
+            setSongs([]);
+            setSaved("");
+          }}
+        />
+        <span>
+          <span>Proche de cet artiste</span>
+          <span>Plus de découvertes</span>
+        </span>
+      </label>
+      <p className="muted">
+        Jusqu’à 30 pistes, 3 par artiste et 2 par album. Les titres des trois
+        dernières sélections sont évités lorsque la collection le permet.
+      </p>
       <button
         className="primary"
         disabled={!seed || loading}
@@ -1556,6 +1589,9 @@ function RadioPanel({
       <ErrorMessage message={error} />
       {songs.length > 0 && (
         <div className="playlist">
+          <p className="muted" role="status">
+            {explanation}
+          </p>
           <div className="section-heading">
             <h2>
               {songs.length} morceaux autour de {seed}
