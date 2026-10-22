@@ -55,6 +55,28 @@ services:
     networks:
       - default
       - music_backend
+  radio-stats:
+    build:
+      context: ./backend
+      target: runtime
+    image: music-manager-api:${APP_VERSION:-local}
+    command: ["python", "collective.py"]
+    restart: unless-stopped
+    network_mode: none
+    healthcheck:
+      disable: true
+    volumes:
+      - ${NAVIDROME_DATA_PATH:-/srv/navidrome/data}:/nav:ro
+      - ./state/radio:/output
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 128m
+    cpus: 0.25
 networks:
   music_backend:
     external: true

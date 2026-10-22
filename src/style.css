@@ -2855,3 +2855,24 @@ audio {
   font-size: 13px;
   color: var(--muted);
 }
+
+.radio-panel > label input[type="search"] {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+}
+
+.radio-method {
+  text-align: left;
+  max-width: 640px;
+  margin: 24px auto;
+}
+.radio-method summary {
+  cursor: pointer;
+  padding: 12px 0;
+  min-height: 44px;
+}
+.radio-method p {
+  color: var(--muted);
+  line-height: 1.65;
+}

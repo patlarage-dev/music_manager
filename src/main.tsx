@@ -878,7 +878,11 @@ function App() {
             />
           )}
           {page === 6 && (
-            <RadioPanel artists={artistList.data?.items || []} tell={tell} />
+            <RadioPanel
+              artists={artistList.data?.items || []}
+              tell={tell}
+              connected={!!status?.session}
+            />
           )}
           {page === 9 && <Playlists revision={revision} />}
           {page === 7 && (
@@ -1491,9 +1495,11 @@ function Discovery({
 function RadioPanel({
   artists,
   tell,
+  connected,
 }: {
   artists: string[];
   tell: (s: string) => void;
+  connected: boolean;
 }) {
   const [artist, setArtist] = useState(""),
     [songs, setSongs] = useState<Song[]>([]),
@@ -1501,7 +1507,26 @@ function RadioPanel({
     [error, setError] = useState(""),
     [saved, setSaved] = useState(""),
     [discovery, setDiscovery] = useState(50),
-    [explanation, setExplanation] = useState("");
+    [explanation, setExplanation] = useState(""),
+    [mode, setMode] = useState("artist"),
+    [trackQuery, setTrackQuery] = useState(""),
+    [trackSearch, setTrackSearch] = useState(""),
+    [trackId, setTrackId] = useState(""),
+    [seedLabel, setSeedLabel] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setTrackSearch(trackQuery), 300);
+    return () => clearTimeout(timer);
+  }, [trackQuery]);
+  const tracks = useResource<{ items: Song[]; total: number }>(
+    mode === "track"
+      ? `/radio/tracks?q=${encodeURIComponent(trackSearch)}`
+      : null,
+  );
+  const reset = () => {
+    setSongs([]);
+    setSaved("");
+    setError("");
+  };
   const seed = artist || artists[0] || "";
   const generate = async () => {
     setLoading(true);
@@ -1514,11 +1539,26 @@ function RadioPanel({
         artists: number;
         repeated: number;
         limitReason: string;
-      }>("/radio", { artist: seed, discovery });
+        seedLabel: string;
+        signals: {
+          popular: boolean;
+          personal: boolean;
+          collective: boolean;
+          songSimilarity: boolean;
+        };
+      }>("/radio", {
+        artist: mode === "artist" ? seed : "",
+        trackId: mode === "track" ? trackId : undefined,
+        discovery,
+      });
+      setSeedLabel(result.seedLabel);
       setSongs(result.items);
-      if (!result.items.length) setError("Aucune piste disponible pour cet artiste. Relancez l’analyse de Bibliothèque.");
+      if (!result.items.length)
+        setError(
+          "Aucune piste disponible pour cet artiste. Relancez l’analyse de Bibliothèque.",
+        );
       setExplanation(
-        `${result.source}. ${result.artists} artistes · ${result.repeated} pistes déjà proposées récemment. ${result.items.length < 30 ? result.limitReason : "Maximum 3 titres par artiste et 2 par album."}`,
+        `${result.source}. ${result.artists} artistes · ${result.repeated} pistes déjà proposées récemment. Signaux utilisés : ${[result.signals.popular && "top titres", result.signals.personal && "vos écoutes et favoris", result.signals.collective && "écoutes collectives agrégées", result.signals.songSimilarity && "chansons proches via Navidrome"].filter(Boolean).join(", ") || "genres et artistes uniquement (autres signaux indisponibles)"}. ${result.items.length < 30 ? result.limitReason : "Maximum 3 titres par artiste et 2 par album."}`,
       );
     } catch (e) {
       setError((e as Error).message);
@@ -1533,26 +1573,90 @@ function RadioPanel({
       </div>
       <h2>Vos disques, un autre chemin.</h2>
       <p>
-        Une sélection locale, à partir d’un artiste et des genres présents dans
-        votre collection. Enregistrez-la ensuite dans Navidrome pour l’écouter
+        Partez d’un artiste ou d’une chanson. La radio combine les titres connus
+        et les écoutes disponibles. Enregistrez-la dans Navidrome pour l’écouter
         dans Substreamer.
       </p>
       <label>
-        Artiste de départ
+        Point de départ
         <select
-          value={seed}
+          value={mode}
           disabled={loading}
           onChange={(e) => {
-            setArtist(e.target.value);
-            setSongs([]);
-            setSaved("");
+            setMode(e.target.value);
+            reset();
           }}
         >
-          {artists.map((a) => (
-            <option key={a}>{a}</option>
-          ))}
+          <option value="artist">Un artiste</option>
+          <option value="track">Une chanson</option>
         </select>
       </label>
+      {mode === "track" ? (
+        <>
+          <label>
+            Rechercher une chanson
+            <input
+              type="search"
+              value={trackQuery}
+              disabled={loading}
+              placeholder="Titre ou artiste"
+              onChange={(e) => {
+                setTrackQuery(e.target.value);
+                setTrackId("");
+                reset();
+              }}
+            />
+          </label>
+          <label>
+            Chanson de départ
+            <select
+              value={trackId}
+              disabled={loading || tracks.loading || trackQuery !== trackSearch}
+              onChange={(e) => {
+                setTrackId(e.target.value);
+                reset();
+              }}
+            >
+              <option value="">
+                {tracks.loading ? "Recherche…" : "Choisir une chanson"}
+              </option>
+              {tracks.data?.items.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.artist} — {t.title} · {t.album}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="muted">
+            {tracks.data?.total || 0} résultats · 50 affichés au maximum. La
+            chanson choisie ouvre la radio. Pas d’analyse du son.
+          </p>
+          <ErrorMessage message={tracks.error} />
+        </>
+      ) : (
+        <label>
+          Artiste de départ
+          <select
+            value={seed}
+            disabled={loading}
+            onChange={(e) => {
+              setArtist(e.target.value);
+              setSongs([]);
+              setSaved("");
+            }}
+          >
+            {artists.map((a) => (
+              <option key={a}>{a}</option>
+            ))}
+          </select>
+        </label>
+      )}
+      {!connected && (
+        <p className="muted">
+          Connectez votre compte dans <a href="#parametres">Paramètres</a> pour
+          utiliser vos écoutes et favoris personnels.
+        </p>
+      )}
       <label className="radio-discovery">
         Équilibre de la sélection
         <input
@@ -1580,12 +1684,32 @@ function RadioPanel({
       </p>
       <button
         className="primary"
-        disabled={!seed || loading}
+        disabled={
+          loading ||
+          (mode === "artist"
+            ? !seed
+            : !trackId || tracks.loading || trackQuery !== trackSearch)
+        }
         onClick={generate}
       >
         <Plus size={18} />
         {loading ? "Création…" : "Créer la sélection"}
       </button>
+      <details className="radio-method">
+        <summary>Comment les titres sont choisis</summary>
+        <p>
+          Proche favorise les titres connus, vos écoutes et vos favoris.
+          Découvertes laisse davantage de place aux titres peu écoutés par vous.
+          Les genres et les recommandations Navidrome définissent les artistes
+          et chansons proches ; il n’y a pas d’analyse du son.
+        </p>
+        <p>
+          La tendance collective est normalisée par utilisateur et s’active dès
+          qu’au moins deux comptes ont des écoutes enregistrées. Un signal
+          indisponible est ignoré. Les sources utilisées sont indiquées après
+          chaque génération.
+        </p>
+      </details>
       <ErrorMessage message={error} />
       {songs.length > 0 && (
         <div className="playlist">
@@ -1594,7 +1718,7 @@ function RadioPanel({
           </p>
           <div className="section-heading">
             <h2>
-              {songs.length} morceaux autour de {seed}
+              {songs.length} morceaux autour de {seedLabel}
             </h2>
           </div>
           <div className="detail-actions">
@@ -1630,7 +1754,7 @@ function RadioPanel({
                     username: string;
                     playlist: { songCount: number };
                   }>("/navidrome/playlist", {
-                    name: `Music Manager — ${seed}`,
+                    name: `Music Manager — ${seedLabel}`.slice(0, 120),
                     trackIds: songs.map((t) => t.id),
                   });
                   setSaved(

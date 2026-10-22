@@ -1548,7 +1548,275 @@ async def radio_similar(artist, credentials=None):
     return names
 
 
-def select_radio(artist, discovery, albums, tracks, similar, recent):
+async def radio_catalog(credentials=None):
+    # Personal signals are never shared across accounts (or used for anonymous visitors).
+    scope = "account:" + credentials["u"] if credentials else "anonymous"
+    key = "radio-catalog:" + identifier(NAV + "/" + scope)
+    with db() as c:
+        row = c.execute(
+            "SELECT payload FROM cache WHERE key=? AND expires>?", (key, time.time())
+        ).fetchone()
+    if row:
+        return json.loads(row["payload"])
+
+    async def fetch():
+        songs = []
+        for offset in range(0, 50000, 500):
+            result = await nav_call(
+                "search3",
+                {
+                    "query": "",
+                    "artistCount": 0,
+                    "albumCount": 0,
+                    "songCount": 500,
+                    "songOffset": offset,
+                },
+                credentials,
+            )
+            page = result.get("searchResult3", {}).get("song", [])
+            songs.extend(page)
+            if len(page) < 500:
+                break
+        return songs
+
+    try:
+        songs = await asyncio.wait_for(fetch(), timeout=15)
+    except (HTTPException, asyncio.TimeoutError):
+        return []
+    if not credentials:
+        songs = [
+            {
+                k: v
+                for k, v in s.items()
+                if k not in ("playCount", "userRating", "starred")
+            }
+            for s in songs
+        ]
+    with db() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO cache VALUES (?,?,?)",
+            (key, time.time() + 300, json.dumps(songs)),
+        )
+    return songs
+
+
+def radio_match(local, catalog):
+    matches = []
+    for song in catalog:
+        exact = song.get("path", "").lstrip("/") in (
+            local.get("rel"),
+            "music/" + local.get("rel", ""),
+        )
+        metadata = (
+            all(
+                radio_key(song.get(k, "")) == radio_key(local.get(k, ""))
+                for k in ("artist", "album", "title")
+            )
+            and abs(float(song.get("duration", -999)) - local.get("duration", 0)) <= 2
+            and song.get("size") == local.get("size")
+        )
+        if exact or metadata:
+            matches.append(song)
+    return matches[0] if len(matches) == 1 else None
+
+
+def collective_scores():
+    try:
+        payload = json.loads((STATE / "radio" / "collective.json").read_text())
+        if time.time() - payload["created"] > 1800 or payload.get("listeners", 0) < 2:
+            return {}
+        return {str(k): max(0, min(1, float(v))) for k, v in payload["scores"].items()}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+
+
+async def radio_signals(artist, names, tracks, credentials, seed_track=None):
+    catalog = await radio_catalog(credentials)
+    if not catalog:
+        return (
+            {},
+            set(),
+            {
+                "popular": False,
+                "personal": False,
+                "collective": False,
+                "songSimilarity": False,
+            },
+        )
+    locals_ = [json.loads(r["payload"]) for r in tracks]
+    by_path, by_metadata = defaultdict(list), defaultdict(list)
+    for song in catalog:
+        by_path[song.get("path", "").lstrip("/")].append(song)
+        by_metadata[
+            tuple(radio_key(song.get(k, "")) for k in ("artist", "album", "title"))
+        ].append(song)
+    mapping = {}
+    for t in locals_:
+        candidates = {
+            song["id"]: song
+            for song in by_path[t.get("rel", "")]
+            + by_path["music/" + t.get("rel", "")]
+            + by_metadata[
+                tuple(radio_key(t.get(k, "")) for k in ("artist", "album", "title"))
+            ]
+        }
+        match = radio_match(t, list(candidates.values()))
+        if match:
+            mapping[t["id"]] = match
+    # Rank only relevant artists. Artist ranking stays balanced independently of hits.
+    wanted = {radio_key(artist), *(radio_key(n) for n in names)}
+    relevant = list(
+        dict.fromkeys(t["artist"] for t in locals_ if radio_key(t["artist"]) in wanted)
+    )[:35]
+    top, similar_ids = {}, set()
+    semaphore = asyncio.Semaphore(4)
+
+    async def tops(name):
+        key = "radio-top:" + identifier(NAV + "/" + radio_key(name))
+        with db() as c:
+            cached = c.execute(
+                "SELECT payload FROM cache WHERE key=? AND expires>?",
+                (key, time.time()),
+            ).fetchone()
+        if cached:
+            songs = json.loads(cached["payload"])
+        else:
+            try:
+                async with semaphore:
+                    result = await asyncio.wait_for(
+                        nav_call(
+                            "getTopSongs", {"artist": name, "count": 30}, credentials
+                        ),
+                        timeout=5,
+                    )
+                # Store only rank identities, never another user's play counts or favorites.
+                songs = [
+                    s["id"]
+                    for s in result.get("topSongs", {}).get("song", [])
+                    if s.get("id")
+                ]
+                with db() as c:
+                    c.execute(
+                        "INSERT OR REPLACE INTO cache VALUES (?,?,?)",
+                        (key, time.time() + 86400, json.dumps(songs)),
+                    )
+            except (HTTPException, asyncio.TimeoutError):
+                songs = []
+        for index, sid in enumerate(songs):
+            top[sid] = max(top.get(sid, 0), 1 / (1 + index / 5))
+
+    async def similar_song():
+        if not seed_track or seed_track["id"] not in mapping:
+            return
+        try:
+            result = await asyncio.wait_for(
+                nav_call(
+                    "getSimilarSongs",
+                    {"id": mapping[seed_track["id"]]["id"], "count": 100},
+                    credentials,
+                ),
+                timeout=5,
+            )
+            similar_ids.update(
+                s["id"]
+                for s in result.get("similarSongs", {}).get("song", [])
+                if s.get("id")
+            )
+        except (HTTPException, asyncio.TimeoutError):
+            pass
+
+    jobs = [asyncio.create_task(tops(name)) for name in relevant] + [
+        asyncio.create_task(similar_song())
+    ]
+    _, pending = await asyncio.wait(jobs, timeout=12)
+    for job in pending:
+        job.cancel()
+    await asyncio.gather(*jobs, return_exceptions=True)
+    collective = collective_scores()
+    maximum = max((int(s.get("playCount") or 0) for s in mapping.values()), default=0)
+    import math
+
+    scores, related_tracks = {}, set()
+    for tid, song in mapping.items():
+        plays = max(0, int(song.get("playCount") or 0)) if credentials else 0
+        personal = math.log1p(plays) / math.log1p(maximum) if maximum else 0
+        personal = max(
+            personal,
+            1 if song.get("starred") and credentials else 0,
+            float(song.get("userRating") or 0) / 5 if credentials else 0,
+        )
+        scores[tid] = {
+            "top": top.get(song["id"], 0),
+            "personal": personal,
+            "collective": collective.get(song["id"], 0),
+            "played": plays > 0,
+        }
+        if song["id"] in similar_ids and (not seed_track or tid != seed_track["id"]):
+            related_tracks.add(tid)
+    return (
+        scores,
+        related_tracks,
+        {
+            "popular": any(s["top"] > 0 for s in scores.values()),
+            "personal": bool(credentials)
+            and any(s["personal"] > 0 for s in scores.values()),
+            "collective": any(s["collective"] > 0 for s in scores.values()),
+            "songSimilarity": bool(related_tracks),
+        },
+    )
+
+
+def radio_track_weight(tid, scores, discovery):
+    values = scores.get(tid, {})
+    explore = discovery / 100
+    # Unknown is neutral. Signals change probability, never bypass diversity limits.
+    multiplier = (
+        1
+        + (2.5 - 1.5 * explore) * values.get("top", 0)
+        + (1.2 - 0.7 * explore) * values.get("collective", 0)
+    )
+    multiplier += 2 * (1 - explore) * values.get("personal", 0)
+    if values.get("played"):
+        multiplier *= 1 - 0.55 * explore
+    return multiplier
+
+
+@app.get("/api/radio/tracks")
+def radio_tracks(q: str = "", artist: str = ""):
+    if len(q) > 200 or len(artist) > 200:
+        raise HTTPException(400, "Recherche trop longue.")
+    with db() as c:
+        rows = c.execute(
+            "SELECT payload FROM tracks WHERE zone='Bibliothèque'"
+        ).fetchall()
+    items = [json.loads(r["payload"]) for r in rows]
+    items = [
+        t
+        for t in items
+        if (not artist or radio_key(t["artist"]) == radio_key(artist))
+        and (
+            not q
+            or radio_key(q)
+            in radio_key(t["artist"] + " " + t["title"] + " " + t["album"])
+        )
+    ]
+    items.sort(key=lambda t: (radio_key(t["artist"]), radio_key(t["title"]), t["id"]))
+    return {"items": items[:50], "total": len(items)}
+
+
+def select_radio(
+    artist,
+    discovery,
+    albums,
+    tracks,
+    similar,
+    recent,
+    scores=None,
+    seed_track=None,
+    related_tracks=None,
+):
+    scores = scores or {}
+    related_tracks = related_tracks or set()
     seed = radio_key(artist)
     seed_albums = [a for a in albums if radio_key(a["artist"]) == seed]
     seed_genres = (
@@ -1556,6 +1824,9 @@ def select_radio(artist, discovery, albums, tracks, similar, recent):
         if seed_albums
         else set()
     )
+    if seed_track:
+        seed_album = next((a for a in albums if a["id"] == seed_track["albumId"]), None)
+        seed_genres = radio_genres(seed_album["genre"]) if seed_album else set()
     similar = {radio_key(name) for name in similar}
     by_album = {a["id"]: a for a in albums}
     groups = defaultdict(list)
@@ -1567,7 +1838,11 @@ def select_radio(artist, discovery, albums, tracks, similar, recent):
         who = radio_key(t["artist"])
         is_seed = radio_key(a["artist"]) == seed or who == seed
         affinity = radio_affinity(seed_genres, radio_genres(a["genre"]))
-        related = who in similar or radio_key(a["artist"]) in similar
+        related = (
+            who in similar
+            or radio_key(a["artist"]) in similar
+            or t["id"] in related_tracks
+        )
         if not (is_seed or related or affinity):
             continue
         groups[who].append((t, row["digest"], is_seed, related, affinity))
@@ -1592,8 +1867,25 @@ def select_radio(artist, discovery, albums, tracks, similar, recent):
     # Guarantee the seed, preferring tracks not heard in the last three generations.
     seeds = [item for group in groups.values() for item in group if item[2]]
     random.shuffle(seeds)
-    seeds.sort(key=lambda item: item[1] in recent)
-    seed_count = 0
+    seeds.sort(
+        key=lambda item: (
+            item[1] in recent,
+            -radio_track_weight(item[0]["id"], scores, discovery),
+        )
+    )
+    if seed_track:
+        explicit = next(
+            (
+                item
+                for group in groups.values()
+                for item in group
+                if item[0]["id"] == seed_track["id"]
+            ),
+            None,
+        )
+        if explicit:
+            take(explicit)
+    seed_count = len(chosen)
     for item in seeds:
         if seed_count == 3:
             break
@@ -1625,10 +1917,17 @@ def select_radio(artist, discovery, albums, tracks, similar, recent):
             pool = options[who]
             weights = [
                 ((3 if i[3] else 0) + 2 * i[4]) ** (2.2 - 1.8 * discovery / 100)
+                * radio_track_weight(i[0]["id"], scores, discovery)
                 for i in pool
             ]
             take(random.choices(pool, weights=weights, k=1)[0])
     random.shuffle(chosen)
+    if seed_track:
+        index = next(
+            (i for i, t in enumerate(chosen) if t["id"] == seed_track["id"]), None
+        )
+        if index is not None:
+            chosen[0], chosen[index] = chosen[index], chosen[0]
     # Avoid adjacent tracks by the same artist when another order is possible.
     for index in range(1, len(chosen)):
         if radio_key(chosen[index]["artist"]) == radio_key(chosen[index - 1]["artist"]):
@@ -1667,7 +1966,8 @@ async def preview_radio(artist: str):
 
 
 class RadioRequest(BaseModel):
-    artist: str = Field(min_length=1, max_length=200)
+    artist: str = Field(default="", max_length=200)
+    trackId: str = Field(default="", max_length=100)
     discovery: int = Field(default=50, ge=0, le=100)
 
 
@@ -1679,11 +1979,8 @@ async def generate_radio(body: RadioRequest, request: Request):
         if account and account.get("credentials")
         else None
     )
-    names = await radio_similar(body.artist, credentials)
     with MUTEX:
         albums = [a for a in all_albums() if a["zone"] == "Bibliothèque"]
-        if not any(radio_key(a["artist"]) == radio_key(body.artist) for a in albums):
-            raise HTTPException(404, "Cet artiste n’est pas présent dans Bibliothèque.")
         with db() as c:
             tracks = [
                 dict(r)
@@ -1691,18 +1988,59 @@ async def generate_radio(body: RadioRequest, request: Request):
                     "SELECT payload,digest FROM tracks WHERE zone='Bibliothèque'"
                 )
             ]
+    seed_track = (
+        next(
+            (
+                json.loads(r["payload"])
+                for r in tracks
+                if json.loads(r["payload"])["id"] == body.trackId
+            ),
+            None,
+        )
+        if body.trackId
+        else None
+    )
+    if body.trackId and not seed_track:
+        raise HTTPException(404, "Cette chanson n’est plus dans Bibliothèque.")
+    artist = seed_track["artist"] if seed_track else body.artist
+    if not artist or (
+        not seed_track
+        and not any(radio_key(a["artist"]) == radio_key(artist) for a in albums)
+    ):
+        raise HTTPException(404, "Cet artiste n’est pas présent dans Bibliothèque.")
+    names = await radio_similar(artist, credentials)
+    scores, related_tracks, signals = await radio_signals(
+        artist, names, tracks, credentials, seed_track
+    )
+    with MUTEX:
         key = "radio-history:" + identifier(
-            (account["username"] if account else "local") + "/" + radio_key(body.artist)
+            (account["username"] if account else "local")
+            + "/"
+            + ("track:" + body.trackId if body.trackId else radio_key(artist))
         )
         history = setting(key, [])
         recent = {digest for generation in history for digest in generation}
-        songs = select_radio(body.artist, body.discovery, albums, tracks, names, recent)
+        songs = select_radio(
+            artist,
+            body.discovery,
+            albums,
+            tracks,
+            names,
+            recent,
+            scores,
+            seed_track,
+            related_tracks,
+        )
         hashes = {json.loads(r["payload"])["id"]: r["digest"] for r in tracks}
         if songs:
             save_setting(key, [[hashes[t["id"]] for t in songs]] + history[:2])
     present = {radio_key(a["artist"]) for a in albums}
     return {
         "items": songs,
+        "signals": signals,
+        "seedLabel": (
+            f"{seed_track['artist']} — {seed_track['title']}" if seed_track else artist
+        ),
         "source": (
             "Artistes proches fournis par Navidrome et genres locaux"
             if present & {radio_key(n) for n in names}

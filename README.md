@@ -53,3 +53,11 @@ Pas d’empreinte acoustique ni de classement automatique de qualité. La radio 
 ## Installer l’application
 
 Le manifeste, les icônes disque pour iOS/Android et le service worker sont inclus. Utiliser l’adresse HTTPS Tailscale et suivre [la procédure PWA](docs/pwa.md). Une page de reconnexion est disponible hors ligne, sans cache des données privées ni de la musique.
+
+### Radio depuis un artiste ou une chanson
+
+La radio combine, lorsqu’ils sont disponibles, le classement `getTopSongs` de Navidrome, les écoutes/favoris/notes du compte connecté et un score collectif normalisé par utilisateur. Le mode Proche favorise les succès et préférences personnelles ; Découvertes réduit le poids des habitudes et des titres déjà écoutés. La diversité reste prioritaire. Les signaux absents sont ignorés et les sources utilisées sont indiquées après génération. Les données personnelles en cache sont séparées par compte (5 minutes). Le classement public des titres est conservé 24 heures, sans compteurs personnels.
+
+En mode Chanson, rechercher et sélectionner un fichier de Bibliothèque. Il ouvre la sélection ; les recommandations de chansons Navidrome et le genre de son album complètent les artistes proches. Il n’y a pas d’analyse acoustique. Une correspondance Navidrome ambiguë ne contribue pas aux scores.
+
+Le worker `radio-stats`, sans réseau ni labels Mini, lit SQLite Navidrome **en lecture seule** et écrit uniquement des scores agrégés par piste dans `state/radio/collective.json`, toutes les 5 minutes. Aucun nom d’utilisateur ni historique individuel n’est exporté. Chaque auditeur a un poids normalisé, et au moins deux comptes doivent avoir des écoutes enregistrées pour activer le collectif. Les scores de plus de 30 minutes sont ignorés. `NAVIDROME_DATA_PATH` peut remplacer le dossier Debian par défaut `/srv/navidrome/data`. Créer `state/radio` avec le propriétaire UID 1000 avant le déploiement. Une indisponibilité de ce worker n’empêche pas la radio de fonctionner.

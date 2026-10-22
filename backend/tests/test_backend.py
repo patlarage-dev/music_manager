@@ -973,3 +973,221 @@ def test_radio_navidrome_recommendations_are_cached_and_failure_falls_back(
 
     monkeypatch.setattr(m, "nav_call", unavailable)
     assert asyncio.run(m.radio_similar("Other")) == []
+
+
+def test_radio_popularity_personal_and_collective_weights_are_distinct(client):
+    scores = {
+        "hit": {"top": 1},
+        "favorite": {"personal": 1, "played": True},
+        "community": {"collective": 1},
+    }
+    assert m.radio_track_weight("hit", scores, 0) > m.radio_track_weight(
+        "unknown", scores, 0
+    )
+    assert m.radio_track_weight("favorite", scores, 0) > m.radio_track_weight(
+        "favorite", scores, 100
+    )
+    assert m.radio_track_weight("community", scores, 50) > 1
+    assert m.radio_track_weight("unknown", scores, 100) == 1
+
+
+def test_radio_from_song_guarantees_exact_seed_even_when_recent(client):
+    albums, tracks = radio_inventory()
+    seed = json.loads(tracks[5]["payload"])
+    songs = m.select_radio(
+        "Seed", 100, albums, tracks, [], {r["digest"] for r in tracks}, {}, seed
+    )
+    assert songs[0]["id"] == seed["id"]
+    from collections import Counter
+
+    assert max(Counter(t["artist"] for t in songs).values()) <= 3
+    assert max(Counter(t["albumId"] for t in songs).values()) <= 2
+
+
+def test_radio_song_endpoint_rejects_incoming_and_search_only_lists_library(
+    client, monkeypatch
+):
+    a, _ = seed()
+    incoming = m.album_tracks(a["id"])[0]
+
+    async def signals(*args):
+        return (
+            {},
+            set(),
+            {
+                "popular": False,
+                "personal": False,
+                "collective": False,
+                "songSimilarity": False,
+            },
+        )
+
+    async def similar(*args):
+        return []
+
+    monkeypatch.setattr(m, "radio_signals", signals)
+    monkeypatch.setattr(m, "radio_similar", similar)
+    assert (
+        client.post("/api/radio", json={"trackId": incoming["id"]}).status_code == 404
+    )
+    a, _ = seed("Bibliothèque")
+    with m.db() as c:
+        own = json.loads(
+            c.execute(
+                "SELECT payload FROM tracks WHERE zone='Bibliothèque'"
+            ).fetchone()[0]
+        )
+    result = client.get("/api/radio/tracks", params={"q": own["title"]}).json()
+    assert result["total"] == 1 and result["items"][0]["zone"] == "Bibliothèque"
+    result = client.post("/api/radio", json={"trackId": own["id"], "discovery": 80})
+    assert result.status_code == 200, result.text
+    assert any(t["id"] == own["id"] for t in result.json()["items"])
+    assert result.json()["signals"]["popular"] is False
+
+
+def test_radio_catalog_cache_is_scoped_by_account(client, monkeypatch):
+    import asyncio
+
+    async def nav(endpoint, params=None, credentials=None):
+        return {
+            "searchResult3": {
+                "song": [
+                    {
+                        "id": "song",
+                        "playCount": (
+                            5 if credentials and credentials["u"] == "one" else 0
+                        ),
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(m, "nav_call", nav)
+    one = asyncio.run(m.radio_catalog({"u": "one"}))
+    two = asyncio.run(m.radio_catalog({"u": "two"}))
+    anonymous = asyncio.run(m.radio_catalog())
+    assert one[0]["playCount"] == 5
+    assert two[0]["playCount"] == 0
+    assert "playCount" not in anonymous[0]
+
+
+def test_radio_match_refuses_ambiguous_recordings(client):
+    local = {
+        "id": "local",
+        "rel": "Artist/Album/a.flac",
+        "title": "Song",
+        "artist": "Artist",
+        "album": "Album",
+        "size": 100,
+        "duration": 20,
+    }
+    song = {**local, "id": "nav", "path": "virtual/path"}
+    assert m.radio_match(local, [song])["id"] == "nav"
+    assert m.radio_match(local, [song, {**song, "id": "another"}]) is None
+    assert m.radio_match(local, [{**song, "size": 101}]) is None
+
+
+def test_collective_export_is_anonymous_normalized_and_read_only(tmp_path):
+    spec = importlib.util.spec_from_file_location(
+        "collective", Path(__file__).parents[1] / "collective.py"
+    )
+    collective = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(collective)
+    database = tmp_path / "nav.db"
+    c = sqlite3.connect(database)
+    c.execute(
+        "CREATE TABLE annotation(user_id TEXT,item_id TEXT,item_type TEXT,play_count INTEGER)"
+    )
+    c.executemany(
+        "INSERT INTO annotation VALUES (?,?,?,?)",
+        [
+            ("user-one", "song-a", "media_file", 10000),
+            ("user-two", "song-b", "media_file", 1),
+        ],
+    )
+    c.commit()
+    c.close()
+    original = database.read_bytes()
+    output = tmp_path / "radio" / "collective.json"
+    collective.export_scores(database, output)
+    payload = json.loads(output.read_text())
+    assert payload["scores"] == {"song-a": 0.5, "song-b": 0.5}
+    assert payload["listeners"] == 2
+    assert "user-one" not in output.read_text() and "user-two" not in output.read_text()
+    assert database.read_bytes() == original
+
+
+def test_collective_signal_expires_and_requires_multiple_listeners(client):
+    directory = m.STATE / "radio"
+    directory.mkdir()
+    path = directory / "collective.json"
+    path.write_text(
+        json.dumps({"created": time.time(), "listeners": 1, "scores": {"song": 1}})
+    )
+    assert m.collective_scores() == {}
+    path.write_text(
+        json.dumps({"created": time.time(), "listeners": 2, "scores": {"song": 0.5}})
+    )
+    assert m.collective_scores() == {"song": 0.5}
+    path.write_text(
+        json.dumps(
+            {"created": time.time() - 3600, "listeners": 2, "scores": {"song": 0.5}}
+        )
+    )
+    assert m.collective_scores() == {}
+
+
+def test_radio_signals_combine_available_sources_without_cross_account_leak(
+    client, monkeypatch
+):
+    import asyncio
+
+    local = {
+        "id": "local",
+        "rel": "Artist/Album/song.flac",
+        "artist": "Artist",
+        "album": "Album",
+        "title": "Song",
+        "size": 100,
+        "duration": 10,
+    }
+    song = {
+        **local,
+        "id": "nav-song",
+        "path": "virtual/path",
+        "playCount": 4,
+        "starred": "2026-01-01",
+    }
+
+    async def catalog(credentials):
+        assert credentials["u"] == "patrick"
+        return [song]
+
+    async def nav(endpoint, params=None, credentials=None):
+        assert credentials["u"] == "patrick"
+        if endpoint == "getTopSongs":
+            return {"topSongs": {"song": [song]}}
+        if endpoint == "getSimilarSongs":
+            return {"similarSongs": {"song": [song]}}
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(m, "radio_catalog", catalog)
+    monkeypatch.setattr(m, "nav_call", nav)
+    monkeypatch.setattr(m, "collective_scores", lambda: {"nav-song": 0.4})
+    scores, related, signals = asyncio.run(
+        m.radio_signals(
+            "Artist", [], [{"payload": json.dumps(local)}], {"u": "patrick"}, local
+        )
+    )
+    assert scores["local"]["top"] == 1
+    assert scores["local"]["personal"] == 1
+    assert scores["local"]["collective"] == 0.4
+    assert related == set()
+    assert signals["popular"] and signals["personal"] and signals["collective"]
+    assert not signals["songSimilarity"]
+    with m.db() as c:
+        cached = c.execute(
+            "SELECT payload FROM cache WHERE key LIKE 'radio-top:%'"
+        ).fetchone()[0]
+    assert json.loads(cached) == ["nav-song"]
+    assert "playCount" not in cached and "patrick" not in cached
