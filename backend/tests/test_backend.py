@@ -32,6 +32,7 @@ def client(tmp_path, monkeypatch):
     }
     for p in roots.values():
         p.mkdir()
+    monkeypatch.setattr(m, "FILE_MANAGERS", {"patrick"})
     monkeypatch.setattr(m, "MEDIA", media)
     monkeypatch.setattr(m, "STATE", state)
     monkeypatch.setattr(m, "ROOTS", roots)
@@ -1301,3 +1302,90 @@ def test_forced_scan_waits_for_previous_scan_to_finish(client, monkeypatch):
     finally:
         m.SCAN_LOCK.release()
     assert finished.wait(2)
+
+
+def test_file_manager_can_move_restore_and_set_preferences_without_navidrome_admin(
+    client,
+):
+    with m.db() as c:
+        c.execute("UPDATE sessions SET admin=0")
+    a, path = seed()
+    plan = client.post(
+        "/api/operations/preview", json={"albumIds": [a["id"]], "action": "move"}
+    )
+    assert plan.status_code == 200, plan.text
+    result = client.post("/api/operations/apply", json={"token": plan.json()["token"]})
+    assert result.status_code == 200, result.text
+    op = client.get("/api/history").json()["items"][0]
+    assert (
+        client.post("/api/history/" + op["id"] + "/restore", json={}).status_code == 200
+    )
+    assert path.is_dir()
+    assert client.put("/api/preferences", json={"scanMinutes": 60}).status_code == 200
+    status = client.get("/api/status").json()["session"]
+    assert status == {"username": "patrick", "admin": False, "canManageFiles": True}
+    assert client.post("/api/navidrome/scan", json={}).status_code == 403
+
+
+def test_navidrome_admin_does_not_implicitly_grant_local_file_rights(client):
+    a, _ = seed()
+    with m.db() as c:
+        c.execute("UPDATE sessions SET username='other-admin', admin=1")
+    requests = [
+        ("/api/operations/preview", {"albumIds": [a["id"]], "action": "move"}),
+        ("/api/operations/apply", {"token": "missing"}),
+        ("/api/history/missing/restore", {}),
+        (
+            "/api/albums/" + a["id"] + "/metadata/preview",
+            {"artist": "A", "album": "B", "year": "2026", "genre": "Rock"},
+        ),
+        ("/api/metadata/apply", {"token": "missing"}),
+    ]
+    for url, body in requests:
+        result = client.post(url, json=body)
+        assert result.status_code == 403, (url, result.text)
+    assert client.put("/api/preferences", json={"scanMinutes": 60}).status_code == 403
+    assert client.get("/api/status").json()["session"]["canManageFiles"] is False
+
+
+def test_file_rights_deny_by_default_and_still_require_login(client, monkeypatch):
+    a, _ = seed()
+    monkeypatch.setattr(m, "FILE_MANAGERS", set())
+    assert (
+        client.post(
+            "/api/operations/preview", json={"albumIds": [a["id"]], "action": "move"}
+        ).status_code
+        == 403
+    )
+    monkeypatch.setattr(m, "FILE_MANAGERS", {"patrick"})
+    with m.db() as c:
+        c.execute("UPDATE sessions SET username='patrick-other'")
+    assert (
+        client.post(
+            "/api/operations/preview", json={"albumIds": [a["id"]], "action": "move"}
+        ).status_code
+        == 403
+    )
+    client.cookies.clear()
+    assert (
+        client.post(
+            "/api/operations/preview", json={"albumIds": [a["id"]], "action": "move"}
+        ).status_code
+        == 401
+    )
+
+
+def test_file_manager_uses_own_navidrome_identity_for_playlists(client, monkeypatch):
+    with m.db() as c:
+        c.execute(
+            "UPDATE sessions SET admin=0,credentials=?", (json.dumps({"u": "patrick"}),)
+        )
+
+    async def nav(endpoint, params=None, credentials=None):
+        assert endpoint == "getPlaylists"
+        assert credentials == {"u": "patrick"}
+        return {"playlists": {"playlist": []}}
+
+    monkeypatch.setattr(m, "nav_call", nav)
+    result = client.get("/api/navidrome/playlists")
+    assert result.status_code == 200 and result.json()["username"] == "patrick"

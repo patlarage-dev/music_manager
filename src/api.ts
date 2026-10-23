@@ -56,7 +56,7 @@ export type Status = {
     username: string | null;
     url: string;
   };
-  session: { username: string; admin: boolean } | null;
+  session: { username: string; admin: boolean; canManageFiles: boolean } | null;
   disk: { free: number; total: number } | null;
   scanMinutes: number;
   roots: Record<string, string>;

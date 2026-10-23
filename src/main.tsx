@@ -313,7 +313,8 @@ function App() {
     formats: string[];
   }>([0, 1, 2, 3, 5, 6].includes(page) ? albumUrl : null, revision);
   const albums = library.data?.items || [];
-  const managementLocked = !status || !!operationMessage || !!status.scan.running;
+  const managementLocked =
+    !status || !!operationMessage || !!status.scan.running;
   const requestManage = (ids: string[], name: string) => {
     if (!managementLocked && !library.loading) setAction({ ids, name });
   };
@@ -1982,7 +1983,15 @@ function SettingsPanel({
           <>
             <p>
               Connecté comme <strong>{status.session.username}</strong> ·{" "}
-              {status.session.admin ? "administrateur" : "utilisateur"}
+              {status.session.admin
+                ? "administrateur Navidrome"
+                : "utilisateur Navidrome"}
+            </p>
+            <p>
+              Gestion des fichiers Music Manager :{" "}
+              {status.session.canManageFiles
+                ? "autorisée"
+                : "non autorisée pour ce compte"}
             </p>
             <button
               onClick={async () => {
@@ -2054,8 +2063,10 @@ function SettingsPanel({
           </form>
         )}
         <p className="muted">
-          Les modifications de fichiers demandent un compte administrateur
-          Navidrome et une confirmation pour chaque opération.
+          La gestion des fichiers est autorisée séparément dans Music Manager,
+          par la configuration du serveur. Aucun rôle administrateur Navidrome
+          n’est nécessaire pour déplacer, renommer, modifier les tags ou
+          restaurer les fichiers. Chaque opération demande une confirmation.
         </p>
         <a
           className="button-link"
@@ -2113,7 +2124,7 @@ function SettingsPanel({
               <option value={10080}>Chaque semaine</option>
             </select>
           </label>
-          <button disabled={busy || !status?.session?.admin}>
+          <button disabled={busy || !status?.session?.canManageFiles}>
             <Check size={16} />
             Enregistrer
           </button>

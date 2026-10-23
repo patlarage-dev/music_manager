@@ -43,6 +43,11 @@ ROOTS = {
     ]
 }
 NAV = os.getenv("NAVIDROME_URL", "http://navidrome:4533").rstrip("/")
+FILE_MANAGERS = {
+    name.strip().casefold()
+    for name in os.getenv("FILE_MANAGER_USERS", "").split(",")
+    if name.strip()
+}
 PUBLIC_NAV = os.getenv("NAVIDROME_PUBLIC_URL", "http://100.120.247.35:4533")
 AUDIO = {
     ".flac",
@@ -577,7 +582,11 @@ async def protect(request: Request, call_next):
     return response
 
 
-def user(request: Request, admin=False):
+def can_manage_files(account):
+    return account["username"].casefold() in FILE_MANAGERS
+
+
+def user(request: Request, admin=False, files=False):
     token = request.cookies.get("mm_session", "")
     with db() as c:
         row = c.execute(
@@ -591,7 +600,12 @@ def user(request: Request, admin=False):
     if admin and not row["admin"]:
         raise HTTPException(
             403,
-            "Un compte administrateur Navidrome est requis pour modifier les fichiers.",
+            "Un compte administrateur Navidrome est requis pour cette action sur Navidrome.",
+        )
+    if files and not can_manage_files(row):
+        raise HTTPException(
+            403,
+            "Ce compte n’est pas autorisé à gérer les fichiers dans Music Manager. Le rôle Navidrome est indépendant.",
         )
     return dict(row)
 
@@ -656,7 +670,11 @@ async def login(body: Login, response: Response):
     response.set_cookie(
         "mm_session", token, httponly=True, samesite="strict", max_age=86400 * 7
     )
-    return {"username": body.username, "admin": account.get("adminRole", False)}
+    return {
+        "username": body.username,
+        "admin": account.get("adminRole", False),
+        "canManageFiles": can_manage_files({"username": body.username}),
+    }
 
 
 @app.delete("/api/session")
@@ -738,7 +756,11 @@ async def status(request: Request):
             "url": PUBLIC_NAV,
         },
         "session": (
-            {"username": session["username"], "admin": bool(session["admin"])}
+            {
+                "username": session["username"],
+                "admin": bool(session["admin"]),
+                "canManageFiles": can_manage_files(session),
+            }
             if session
             else None
         ),
@@ -762,7 +784,7 @@ class Preferences(BaseModel):
 
 @app.put("/api/preferences")
 def preferences(body: Preferences, request: Request):
-    user(request, admin=True)
+    user(request, files=True)
     if body.scanMinutes not in (0, 60, 1440, 10080):
         raise HTTPException(400, "Fréquence non autorisée.")
     save_setting("scanMinutes", body.scanMinutes)
@@ -918,7 +940,7 @@ def snapshot(path):
 
 @app.post("/api/operations/preview")
 def preview(body: Operation, request: Request):
-    user(request, admin=True)
+    user(request, files=True)
     if body.action not in ("trash", "move", "rename"):
         raise HTTPException(400, "Opération inconnue.")
     if body.action == "rename" and len(body.albumIds) != 1:
@@ -1099,7 +1121,7 @@ class Apply(BaseModel):
 
 @app.post("/api/operations/apply")
 def apply(body: Apply, request: Request):
-    user(request, admin=True)
+    user(request, files=True)
     with MUTEX:
         with db() as c:
             row = c.execute(
@@ -1202,7 +1224,7 @@ def history():
 
 @app.post("/api/history/{oid}/restore")
 def restore(oid: str, request: Request):
-    user(request, admin=True)
+    user(request, files=True)
     with MUTEX:
         with db() as c:
             row = c.execute(
@@ -2491,7 +2513,7 @@ class Metadata(BaseModel):
 
 @app.post("/api/albums/{aid}/metadata/preview")
 def metadata_preview(aid: str, body: Metadata, request: Request):
-    user(request, admin=True)
+    user(request, files=True)
     a = album(aid)
     songs = album_tracks(aid)
     if body.year and not re.fullmatch(r"\d{4}", body.year):
@@ -2533,7 +2555,7 @@ def metadata_preview(aid: str, body: Metadata, request: Request):
 
 @app.post("/api/metadata/apply")
 def metadata_apply(body: Apply, request: Request):
-    user(request, admin=True)
+    user(request, files=True)
     with MUTEX:
         with db() as c:
             row = c.execute(
