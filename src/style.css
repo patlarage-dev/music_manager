@@ -2890,3 +2890,49 @@ audio {
 .operation-progress svg {
   flex-shrink: 0;
 }
+
+.folder-browser > summary {
+  cursor: pointer;
+  min-height: 44px;
+  padding: 10px 0;
+  line-height: 1.7;
+}
+.folder-browser > summary::marker {
+  color: var(--accent);
+}
+.folder-count {
+  color: var(--muted);
+  font-size: 12px;
+  margin-left: 14px;
+}
+.folder-content {
+  padding-top: 12px;
+}
+.folder-search {
+  margin-bottom: 12px;
+  max-width: 460px;
+}
+.folder-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+.folder-pagination span {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+@media (max-width: 650px) {
+  .folder-count {
+    display: block;
+    margin-left: 18px;
+  }
+  .folder-pagination {
+    gap: 6px;
+  }
+  .folder-pagination button {
+    padding-inline: 10px;
+  }
+}

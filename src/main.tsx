@@ -718,6 +718,7 @@ function App() {
               ) : (
                 <>
                   <Explorer
+                    key={zone}
                     zone={zone}
                     revision={revision}
                     pending={!!operationMessage}
@@ -1032,11 +1033,20 @@ function Explorer({
   pending: boolean;
 }) {
   const [path, setPath] = useState(""),
+    [expanded, setExpanded] = useState(false),
+    [filter, setFilter] = useState(""),
+    [offset, setOffset] = useState(0),
     [playing, setPlaying] = useState<string | null>(null);
   useEffect(() => {
     setPath("");
     setPlaying(null);
+    setExpanded(false);
   }, [zone]);
+  useEffect(() => {
+    setFilter("");
+    setOffset(0);
+    setPlaying(null);
+  }, [zone, path]);
   const { data, error, loading } = useResource<{
     items: {
       name: string;
@@ -1047,62 +1057,133 @@ function Explorer({
     }[];
     path: string;
   }>(
-    `/explorer?zone=${encodeURIComponent(zone)}&path=${encodeURIComponent(path)}`,
+    expanded
+      ? `/explorer?zone=${encodeURIComponent(zone)}&path=${encodeURIComponent(path)}`
+      : null,
     revision,
   );
+  const normalize = (value: string) =>
+    value
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLocaleLowerCase();
+  const items = (data?.items || []).filter((item) =>
+    normalize(item.name).includes(normalize(filter)),
+  );
+  const pageOffset = Math.min(
+    offset,
+    Math.max(0, Math.ceil(items.length / 8) - 1) * 8,
+  );
   return (
-    <section className="folder-browser">
-      <div className="folder-path">
-        <button
-          disabled={!path || loading || pending}
-          onClick={() => setPath(path.split("/").slice(0, -1).join("/"))}
-          aria-label="Dossier parent"
-        >
-          <ArrowLeft size={18} />
-        </button>
-        <button disabled={loading || pending} onClick={() => setPath("")}>
-          {zone}
-        </button>
-        {path && <span> / {path}</span>}
-      </div>
-      <ErrorMessage message={error} />
-      {loading && (
-        <p className="operation-progress" role="status">
-          <Loader2 className="spinning" size={20} />
-          Chargement du dossier…
-        </p>
-      )}
-      <div className="file-list" aria-busy={loading || pending}>
-        {data?.items.map((item) => (
+    <details
+      className="folder-browser"
+      open={expanded}
+      onToggle={(e) => {
+        setExpanded(e.currentTarget.open);
+        if (!e.currentTarget.open) setPlaying(null);
+      }}
+    >
+      <summary>
+        <strong>Parcourir les dossiers</strong>
+        <span className="folder-count">
+          {data
+            ? `${data.items.length} éléments`
+            : "Dossiers et fichiers du serveur"}
+        </span>
+      </summary>
+      <div className="folder-content">
+        <div className="folder-path">
           <button
-            key={item.path}
-            disabled={loading || pending || (!item.directory && !item.trackId)}
-            onClick={() =>
-              item.directory ? setPath(item.path) : setPlaying(item.trackId)
-            }
+            disabled={!path || loading || pending}
+            onClick={() => setPath(path.split("/").slice(0, -1).join("/"))}
+            aria-label="Dossier parent"
           >
-            {item.directory ? <Folder size={20} /> : <FileAudio size={20} />}
-            <span>{item.name}</span>
-            {item.directory ? (
-              <ChevronRight size={17} />
-            ) : item.trackId ? (
-              <Play size={17} />
-            ) : null}
+            <ArrowLeft size={18} />
           </button>
-        ))}
-        {!loading && data?.items.length === 0 && (
-          <p className="muted">Ce dossier est vide.</p>
+          <button disabled={loading || pending} onClick={() => setPath("")}>
+            {zone}
+          </button>
+          {path && <span> / {path}</span>}
+        </div>
+        <label className="search folder-search">
+          <Search size={17} aria-hidden="true" />
+          <input
+            type="search"
+            aria-label="Filtrer ce dossier"
+            placeholder="Filtrer ce dossier…"
+            value={filter}
+            disabled={pending || loading}
+            onChange={(e) => {
+              setFilter(e.target.value);
+              setOffset(0);
+            }}
+          />
+        </label>
+        <ErrorMessage message={error} />
+        {loading && (
+          <p className="operation-progress" role="status">
+            <Loader2 className="spinning" size={20} />
+            Chargement du dossier…
+          </p>
+        )}
+        <div className="file-list" aria-busy={loading || pending}>
+          {items.slice(pageOffset, pageOffset + 8).map((item) => (
+            <button
+              key={item.path}
+              disabled={
+                loading || pending || (!item.directory && !item.trackId)
+              }
+              onClick={() =>
+                item.directory ? setPath(item.path) : setPlaying(item.trackId)
+              }
+            >
+              {item.directory ? <Folder size={20} /> : <FileAudio size={20} />}
+              <span>{item.name}</span>
+              {item.directory ? (
+                <ChevronRight size={17} />
+              ) : item.trackId ? (
+                <Play size={17} />
+              ) : null}
+            </button>
+          ))}
+          {!loading && !error && data && !items.length && (
+            <p className="muted">
+              {filter
+                ? "Aucun élément ne correspond dans ce dossier."
+                : "Ce dossier est vide."}
+            </p>
+          )}
+        </div>
+        {items.length > 8 && (
+          <nav className="folder-pagination" aria-label="Pages du dossier">
+            <button
+              disabled={pending || loading || pageOffset === 0}
+              onClick={() => setOffset(Math.max(0, pageOffset - 8))}
+            >
+              Précédent
+            </button>
+            <span role="status">
+              {pageOffset + 1}–{Math.min(pageOffset + 8, items.length)} sur{" "}
+              {items.length}
+            </span>
+            <button
+              disabled={pending || loading || pageOffset + 8 >= items.length}
+              onClick={() => setOffset(pageOffset + 8)}
+            >
+              Suivant
+            </button>
+          </nav>
+        )}
+        {playing && (
+          <audio
+            aria-label="Préécoute du fichier"
+            controls
+            autoPlay
+            src={`/api/tracks/${playing}/stream`}
+          />
         )}
       </div>
-      {playing && (
-        <audio
-          aria-label="Préécoute du fichier"
-          controls
-          autoPlay
-          src={`/api/tracks/${playing}/stream`}
-        />
-      )}
-    </section>
+    </details>
   );
 }
 function AlbumDialog({
