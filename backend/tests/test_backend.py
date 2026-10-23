@@ -13,6 +13,7 @@ spec = importlib.util.spec_from_file_location(
 )
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
+REAL_START_SCAN = m.start_scan
 
 
 @pytest.fixture()
@@ -34,7 +35,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(m, "MEDIA", media)
     monkeypatch.setattr(m, "STATE", state)
     monkeypatch.setattr(m, "ROOTS", roots)
-    monkeypatch.setattr(m, "start_scan", lambda: None)
+    monkeypatch.setattr(m, "start_scan", lambda *args, **kwargs: None)
     m.SCAN.update(running=False, processed=0, errors=[], lastScan=None)
     m.init()
     with m.db() as c:
@@ -1263,3 +1264,40 @@ def test_move_plan_created_before_path_fix_must_be_previewed_again(client):
     result = client.post("/api/operations/apply", json={"token": token})
     assert result.status_code == 409
     assert path.is_dir()
+
+
+def test_apply_returns_index_baseline_and_queues_a_fresh_scan(client, monkeypatch):
+    a, _ = seed()
+    baseline = m.setting("lastScan")
+    calls = []
+    monkeypatch.setattr(m, "start_scan", lambda **kwargs: calls.append(kwargs))
+    plan = client.post(
+        "/api/operations/preview", json={"albumIds": [a["id"]], "action": "move"}
+    ).json()
+    result = client.post("/api/operations/apply", json={"token": plan["token"]})
+    assert result.status_code == 200, result.text
+    assert result.json()["scanAfter"] == baseline
+    assert calls == [{"force": True}]
+    status = client.get("/api/scan/status")
+    assert status.status_code == 200 and status.json()["lastScan"] == baseline
+
+
+def test_forced_scan_waits_for_previous_scan_to_finish(client, monkeypatch):
+    import threading
+
+    finished = threading.Event()
+    actual_scan = m.scan
+
+    def tracked_scan(*args, **kwargs):
+        actual_scan(*args, **kwargs)
+        finished.set()
+
+    monkeypatch.setattr(m, "scan", tracked_scan)
+    m.SCAN["running"] = True
+    m.SCAN_LOCK.acquire()
+    try:
+        REAL_START_SCAN(force=True)
+        assert not finished.wait(0.05)
+    finally:
+        m.SCAN_LOCK.release()
+    assert finished.wait(2)

@@ -2876,3 +2876,17 @@ audio {
   color: var(--muted);
   line-height: 1.65;
 }
+
+.operation-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  color: var(--accent);
+  background: #263645;
+  border-radius: 8px;
+  line-height: 1.6;
+}
+.operation-progress svg {
+  flex-shrink: 0;
+}

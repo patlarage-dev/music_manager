@@ -46,6 +46,11 @@ import {
 import "./style.css";
 import { InstallApp } from "./pwa";
 import { Playlists } from "./Playlists";
+import {
+  createActionGate,
+  waitForIndex,
+  type IndexState,
+} from "./operation-state.mjs";
 const pages = [
   "Tableau de bord",
   "Explorateur",
@@ -133,11 +138,13 @@ function Dialog({
   onClose,
   children,
   className = "",
+  busy = false,
 }: {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
   className?: string;
+  busy?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const closeRef = useRef(onClose);
@@ -161,10 +168,10 @@ function Dialog({
       aria-label={title}
       onCancel={(e) => {
         e.preventDefault();
-        closeRef.current();
+        if (!busy) closeRef.current();
       }}
       onClick={(e) => {
-        if (e.target === e.currentTarget) closeRef.current();
+        if (!busy && e.target === e.currentTarget) closeRef.current();
       }}
     >
       <div className="dialog-content">
@@ -173,7 +180,10 @@ function Dialog({
           <button
             autoFocus
             className="icon-button"
-            aria-label="Fermer"
+            aria-label={
+              busy ? "Veuillez patienter pendant l’opération" : "Fermer"
+            }
+            disabled={busy}
             onClick={onClose}
           >
             <X />
@@ -224,6 +234,7 @@ function App() {
     [detail, setDetail] = useState<string | null>(null),
     [toast, setToast] = useState(""),
     [busy, setBusy] = useState(false),
+    [operationMessage, setOperationMessage] = useState(""),
     [action, setAction] = useState<{ ids: string[]; name: string } | null>(
       null,
     );
@@ -302,6 +313,10 @@ function App() {
     formats: string[];
   }>([0, 1, 2, 3, 5, 6].includes(page) ? albumUrl : null, revision);
   const albums = library.data?.items || [];
+  const managementLocked = !status || !!operationMessage || !!status.scan.running;
+  const requestManage = (ids: string[], name: string) => {
+    if (!managementLocked && !library.loading) setAction({ ids, name });
+  };
   const artistList = useResource<{ items: string[] }>(
     [5, 6].includes(page) ? "/artists" : null,
     revision,
@@ -355,10 +370,8 @@ function App() {
         </button>
         <button
           className="primary"
-          disabled={!selected.length || library.loading}
-          onClick={() =>
-            setAction({ ids: selected, name: `${selected.length} album(s)` })
-          }
+          disabled={!selected.length || library.loading || managementLocked}
+          onClick={() => requestManage(selected, `${selected.length} album(s)`)}
         >
           Gérer la sélection <ChevronRight size={16} />
         </button>
@@ -703,7 +716,17 @@ function App() {
                 grid(albums)
               ) : (
                 <>
-                  <Explorer zone={zone} revision={revision} />
+                  <Explorer
+                    zone={zone}
+                    revision={revision}
+                    pending={!!operationMessage}
+                  />
+                  {operationMessage && (
+                    <p className="operation-progress" role="status">
+                      <Loader2 className="spinning" size={20} />
+                      {operationMessage}
+                    </p>
+                  )}
                   <div className="explorer-results">
                     <div className="section-heading">
                       <h2>Albums dans cet espace</h2>
@@ -795,6 +818,7 @@ function App() {
                             type="checkbox"
                             checked={selected.includes(a.id)}
                             disabled={
+                              managementLocked ||
                               library.loading ||
                               (!selected.includes(a.id) &&
                                 selected.length >= 20)
@@ -822,9 +846,8 @@ function App() {
                           <button
                             className="icon-button"
                             aria-label={`Gérer ${a.title}`}
-                            onClick={() =>
-                              setAction({ ids: [a.id], name: a.title })
-                            }
+                            disabled={managementLocked || library.loading}
+                            onClick={() => requestManage([a.id], a.title)}
                           >
                             <MoreHorizontal />
                           </button>
@@ -971,21 +994,26 @@ function App() {
           onClose={() => setDetail(null)}
           refresh={refresh}
           tell={tell}
+          managementLocked={managementLocked}
           onManage={(id, name) => {
-            setDetail(null);
-            setAction({ ids: [id], name });
+            if (!managementLocked && !library.loading) {
+              setDetail(null);
+              requestManage([id], name);
+            }
           }}
         />
       )}
       {action && (
         <ManageDialog
           {...action}
-          onClose={() => setAction(null)}
+          onProgress={setOperationMessage}
+          onClose={() => {
+            if (!operationMessage) setAction(null);
+          }}
           onDone={() => {
             setAction(null);
             setSelected([]);
             refresh();
-            setTimeout(refresh, 1500);
           }}
           tell={tell}
         />
@@ -993,14 +1021,22 @@ function App() {
     </div>
   );
 }
-function Explorer({ zone, revision }: { zone: string; revision: number }) {
+function Explorer({
+  zone,
+  revision,
+  pending,
+}: {
+  zone: string;
+  revision: number;
+  pending: boolean;
+}) {
   const [path, setPath] = useState(""),
     [playing, setPlaying] = useState<string | null>(null);
   useEffect(() => {
     setPath("");
     setPlaying(null);
   }, [zone]);
-  const { data, error } = useResource<{
+  const { data, error, loading } = useResource<{
     items: {
       name: string;
       path: string;
@@ -1017,21 +1053,29 @@ function Explorer({ zone, revision }: { zone: string; revision: number }) {
     <section className="folder-browser">
       <div className="folder-path">
         <button
-          disabled={!path}
+          disabled={!path || loading || pending}
           onClick={() => setPath(path.split("/").slice(0, -1).join("/"))}
           aria-label="Dossier parent"
         >
           <ArrowLeft size={18} />
         </button>
-        <button onClick={() => setPath("")}>{zone}</button>
+        <button disabled={loading || pending} onClick={() => setPath("")}>
+          {zone}
+        </button>
         {path && <span> / {path}</span>}
       </div>
       <ErrorMessage message={error} />
-      <div className="file-list">
+      {loading && (
+        <p className="operation-progress" role="status">
+          <Loader2 className="spinning" size={20} />
+          Chargement du dossier…
+        </p>
+      )}
+      <div className="file-list" aria-busy={loading || pending}>
         {data?.items.map((item) => (
           <button
             key={item.path}
-            disabled={!item.directory && !item.trackId}
+            disabled={loading || pending || (!item.directory && !item.trackId)}
             onClick={() =>
               item.directory ? setPath(item.path) : setPlaying(item.trackId)
             }
@@ -1045,7 +1089,7 @@ function Explorer({ zone, revision }: { zone: string; revision: number }) {
             ) : null}
           </button>
         ))}
-        {data?.items.length === 0 && (
+        {!loading && data?.items.length === 0 && (
           <p className="muted">Ce dossier est vide.</p>
         )}
       </div>
@@ -1067,6 +1111,7 @@ function AlbumDialog({
   refresh,
   tell,
   onManage,
+  managementLocked,
 }: {
   id: string;
   revision: number;
@@ -1074,6 +1119,7 @@ function AlbumDialog({
   refresh: () => void;
   tell: (s: string) => void;
   onManage: (id: string, name: string) => void;
+  managementLocked: boolean;
 }) {
   const { data: a, error } = useResource<Album>(`/albums/${id}`, revision);
   const [playing, setPlaying] = useState<Song | null>(null),
@@ -1151,7 +1197,10 @@ function AlbumDialog({
               <Search size={17} />
               {busy ? "Recherche…" : "Identifier avec MusicBrainz"}
             </button>
-            <button onClick={() => onManage(a.id, a.title)}>
+            <button
+              disabled={managementLocked}
+              onClick={() => onManage(a.id, a.title)}
+            >
               <MoreHorizontal size={18} /> Gérer l’album
             </button>
           </div>
@@ -2109,47 +2158,75 @@ function ManageDialog({
   onClose,
   onDone,
   tell,
+  onProgress,
 }: {
   ids: string[];
   name: string;
   onClose: () => void;
   onDone: () => void;
   tell: (s: string) => void;
+  onProgress: (message: string) => void;
 }) {
   const [action, setAction] = useState("move"),
     [destination, setDestination] = useState("Bibliothèque"),
     [newName, setNewName] = useState(""),
     [plan, setPlan] = useState<Plan | null>(null),
     [busy, setBusy] = useState(false),
-    [error, setError] = useState("");
+    [error, setError] = useState(""),
+    [progress, setProgress] = useState("");
+  const gate = useRef(createActionGate());
+  const report = (message: string) => {
+    setProgress(message);
+    onProgress(message);
+  };
   return (
-    <Dialog title={`Gérer ${name}`} onClose={onClose}>
+    <Dialog
+      title={`Gérer ${name}`}
+      onClose={() => {
+        if (!gate.current.isPending()) onClose();
+      }}
+      busy={busy}
+    >
+      {busy && (
+        <p className="operation-progress" role="status">
+          <Loader2 size={20} className="spinning" />
+          {progress}
+        </p>
+      )}
       <ErrorMessage message={error} />
       {!plan ? (
         <form
           onSubmit={async (e) => {
             e.preventDefault();
-            setBusy(true);
-            setError("");
-            try {
-              setPlan(
-                await api<Plan>("/operations/preview", {
-                  albumIds: ids,
-                  action,
-                  destinationZone: destination,
-                  newName,
-                }),
-              );
-            } catch (e) {
-              setError((e as Error).message);
-            } finally {
-              setBusy(false);
-            }
+            await gate.current.run(async () => {
+              setBusy(true);
+              report("Vérification des destinations…");
+              setError("");
+              try {
+                setPlan(
+                  await api<Plan>("/operations/preview", {
+                    albumIds: ids,
+                    action,
+                    destinationZone: destination,
+                    newName,
+                  }),
+                );
+              } catch (e) {
+                setError((e as Error).message);
+              } finally {
+                setBusy(false);
+                report("");
+              }
+            });
           }}
         >
           <label className="field">
             Action
-            <select value={action} onChange={(e) => setAction(e.target.value)}>
+            <select
+              disabled={busy}
+              value={action}
+              onChange={(e) => setAction(e.target.value)}
+            >
               <option value="move">Déplacer</option>
               {ids.length === 1 && (
                 <option value="rename">Renommer le dossier</option>
@@ -2161,6 +2238,7 @@ function ManageDialog({
             <label className="field">
               Destination
               <select
+                disabled={busy}
                 value={destination}
                 onChange={(e) => setDestination(e.target.value)}
               >
@@ -2175,6 +2253,7 @@ function ManageDialog({
               Nouveau nom
               <input
                 required
+                disabled={busy}
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
               />
@@ -2205,23 +2284,51 @@ function ManageDialog({
             </div>
           ))}
           <div className="detail-actions">
-            <button onClick={() => setPlan(null)}>Modifier</button>
+            <button disabled={busy} onClick={() => setPlan(null)}>
+              Modifier
+            </button>
             <button
               className="primary"
               disabled={busy}
               onClick={async () => {
-                setBusy(true);
-                setError("");
-                try {
-                  await api("/operations/apply", { token: plan.token });
-                  tell("Opération terminée et consignée dans l’historique.");
-                  onDone();
-                } catch (e) {
-                  setError((e as Error).message);
-                  setPlan(null);
-                } finally {
-                  setBusy(false);
-                }
+                await gate.current.run(async () => {
+                  setBusy(true);
+                  report(
+                    "Opération sur les fichiers en cours… Ne relancez pas cette action.",
+                  );
+                  setError("");
+                  let applied = false;
+                  try {
+                    const result = await api<{ scanAfter: string | null }>(
+                      "/operations/apply",
+                      { token: plan.token },
+                    );
+                    applied = true;
+                    report(
+                      "Mise à jour de la bibliothèque… Patientez avant une nouvelle action.",
+                    );
+                    await waitForIndex(
+                      () => api<IndexState>("/scan/status"),
+                      result.scanAfter,
+                      report,
+                    );
+                    tell(
+                      "Opération terminée. Bibliothèque à jour et historique enregistré.",
+                    );
+                    onDone();
+                  } catch (e) {
+                    if (applied) {
+                      tell((e as Error).message);
+                      onDone();
+                    } else {
+                      setError((e as Error).message);
+                      setPlan(null);
+                    }
+                  } finally {
+                    setBusy(false);
+                    report("");
+                  }
+                });
               }}
             >
               {busy

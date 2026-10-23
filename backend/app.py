@@ -311,8 +311,8 @@ def picture(path: Path, album_id: str):
         return False
 
 
-def scan():
-    if not SCAN_LOCK.acquire(blocking=False):
+def scan(blocking=False):
+    if not SCAN_LOCK.acquire(blocking=blocking):
         return
     SCAN.update(running=True, processed=0, errors=[])
     try:
@@ -526,9 +526,13 @@ def scan():
         SCAN_LOCK.release()
 
 
-def start_scan():
-    if not SCAN["running"]:
-        threading.Thread(target=scan, daemon=True).start()
+def start_scan(force=False):
+    def run():
+        # A mutation must get a scan after it, even if an older scan is finishing.
+        scan(blocking=force)
+
+    if force or not SCAN["running"]:
+        threading.Thread(target=run, daemon=True).start()
 
 
 def periodic():
@@ -693,6 +697,11 @@ def album_tracks(aid):
         [json.loads(r[0]) for r in rows],
         key=lambda t: (t["disc"], t["number"], t["title"]),
     )
+
+
+@app.get("/api/scan/status")
+def scan_status():
+    return {**SCAN, "lastScan": setting("lastScan")}
 
 
 @app.get("/api/status")
@@ -1168,8 +1177,9 @@ def apply(body: Apply, request: Request):
                 409,
                 "Opération interrompue. Consultez l’historique ; les fichiers déjà transférés ont fait l’objet d’une tentative de restauration.",
             )
-    start_scan()
-    return {"ok": True, "count": len(completed)}
+        scan_after = setting("lastScan")
+    start_scan(force=True)
+    return {"ok": True, "count": len(completed), "scanAfter": scan_after}
 
 
 @app.get("/api/history")
