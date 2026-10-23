@@ -874,6 +874,15 @@ class Operation(BaseModel):
     newName: str = ""
 
 
+def album_move_path(album):
+    folder = Path(album["folder"])
+    # Keep the source hierarchy, including an album's disc/format subdirectories.
+    # Only a folder directly at the zone root needs an artist parent added.
+    if len(folder.parts) > 1:
+        return folder.as_posix()
+    return f"{clean_name(album['artist'])}/{clean_name(folder.name)}"
+
+
 def snapshot(path):
     if path.is_symlink():
         raise HTTPException(400, "Les liens symboliques ne sont pas autorisés.")
@@ -1028,7 +1037,7 @@ def preview(body: Operation, request: Request):
                     raise HTTPException(400, "Destination inconnue.")
                 target = safe_path(
                     body.destinationZone,
-                    f"{clean_name(a['artist'])}/{clean_name(source.name)}",
+                    album_move_path(a),
                     False,
                 )
             if target.exists() or target in targets:
@@ -1056,7 +1065,7 @@ def preview(body: Operation, request: Request):
                 (
                     token,
                     time.time() + 300,
-                    json.dumps({"action": body.action, "items": plan}),
+                    json.dumps({"action": body.action, "items": plan, "moveLayout": 2}),
                 ),
             )
     return {
@@ -1093,6 +1102,11 @@ def apply(body: Apply, request: Request):
                     409, "Prévisualisation expirée ou déjà utilisée. Recommencez."
                 )
             plan = json.loads(row["payload"])
+            if plan.get("action") == "move" and plan.get("moveLayout") != 2:
+                raise HTTPException(
+                    409,
+                    "Le calcul des destinations a été mis à jour. Recommencez la prévisualisation.",
+                )
             if "action" not in plan or "items" not in plan:
                 raise HTTPException(400, "Prévisualisation de déplacement requise.")
             for item in plan["items"]:

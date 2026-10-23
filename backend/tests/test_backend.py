@@ -1191,3 +1191,75 @@ def test_radio_signals_combine_available_sources_without_cross_account_leak(
         ).fetchone()[0]
     assert json.loads(cached) == ["nav-song"]
     assert "playCount" not in cached and "patrick" not in cached
+
+
+def test_multidisc_moves_preserve_album_hierarchy_and_restore(client):
+    seed(folder="Linkin Park/Album One/CD1", name="one.wav")
+    seed(folder="Linkin Park/Album Two/CD1", name="two.wav")
+    original = {a["id"]: a for a in m.all_albums()}
+    # An old flattened destination must not block either correctly nested album.
+    old = m.ROOTS["Bibliothèque"] / "Linkin Park" / "CD1"
+    old.mkdir(parents=True)
+    (old / "existing.txt").write_text("untouched")
+    plan = client.post(
+        "/api/operations/preview", json={"albumIds": list(original), "action": "move"}
+    )
+    assert plan.status_code == 200, plan.text
+    assert {
+        p["target"].removeprefix("/mnt/media/music/") for p in plan.json()["items"]
+    } == {"Linkin Park/Album One/CD1", "Linkin Park/Album Two/CD1"}
+    assert (
+        client.post(
+            "/api/operations/apply", json={"token": plan.json()["token"]}
+        ).status_code
+        == 200
+    )
+    assert (m.ROOTS["Bibliothèque"] / "Linkin Park/Album One/CD1/one.wav").is_file()
+    assert (m.ROOTS["Bibliothèque"] / "Linkin Park/Album Two/CD1/two.wav").is_file()
+    assert (old / "existing.txt").read_text() == "untouched"
+    for op in client.get("/api/history").json()["items"]:
+        assert (
+            client.post("/api/history/" + op["id"] + "/restore", json={}).status_code
+            == 200
+        )
+    for a in original.values():
+        assert (m.ROOTS["Téléchargements"] / a["folder"]).is_dir()
+
+
+def test_multidisc_existing_exact_destination_still_refuses_overwrite(client):
+    a, _ = seed(folder="Linkin Park/Album/CD1")
+    target = m.ROOTS["Bibliothèque"] / a["folder"]
+    target.mkdir(parents=True)
+    (target / "keep.txt").write_text("original")
+    response = client.post(
+        "/api/operations/preview", json={"albumIds": [a["id"]], "action": "move"}
+    )
+    assert response.status_code == 409
+    assert (target / "keep.txt").read_text() == "original"
+
+
+def test_move_path_retains_deeper_hierarchy_and_root_album_fallback(client):
+    assert (
+        m.album_move_path(
+            {"folder": "Artist/Album/Disc 2/FLAC", "artist": "Tag Artist"}
+        )
+        == "Artist/Album/Disc 2/FLAC"
+    )
+    assert m.album_move_path({"folder": "Album", "artist": "Artist"}) == "Artist/Album"
+
+
+def test_move_plan_created_before_path_fix_must_be_previewed_again(client):
+    a, path = seed(folder="Artist/Album/CD1")
+    response = client.post(
+        "/api/operations/preview", json={"albumIds": [a["id"]], "action": "move"}
+    )
+    token = response.json()["token"]
+    with m.db() as c:
+        payload = json.loads(
+            c.execute("SELECT payload FROM plans WHERE id=?", (token,)).fetchone()[0]
+        )
+        payload.pop("moveLayout")
+        c.execute("UPDATE plans SET payload=? WHERE id=?", (json.dumps(payload), token))
+    result = client.post("/api/operations/apply", json={"token": token})
+    assert result.status_code == 409
+    assert path.is_dir()
