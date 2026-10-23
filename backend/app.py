@@ -791,6 +791,11 @@ def preferences(body: Preferences, request: Request):
     return {"ok": True}
 
 
+def album_genres(value):
+    """Semicolons separate independent genre tags; preserve display spelling."""
+    return {part.strip() for part in value.split(";") if part.strip()}
+
+
 @app.get("/api/albums")
 def list_albums(
     q: str = "",
@@ -803,12 +808,17 @@ def list_albums(
     format: str = "",
     state: str = "",
 ):
-    values = all_albums()
+    albums = all_albums()
+    values = albums
     values = [
         a
         for a in values
         if (not zone or a["zone"] == zone)
-        and (not genre or a["genre"] == genre)
+        and (
+            not genre
+            or genre.strip().casefold()
+            in {g.casefold() for g in album_genres(a["genre"])}
+        )
         and (not format or format.upper() in a["format"].split(", "))
         and (not state or a["completeness"] == state)
         and q.casefold() in f"{a['artist']} {a['title']}".casefold()
@@ -821,7 +831,15 @@ def list_albums(
     return {
         "items": values[max(0, offset) : max(0, offset) + min(max(limit, 1), 100)],
         "total": len(values),
-        "genres": sorted({a["genre"] for a in all_albums()}),
+        "genres": list(
+            {
+                g.casefold(): g
+                for g in sorted(
+                    {g for a in albums for g in album_genres(a["genre"])},
+                    key=lambda g: (g.casefold(), g),
+                )
+            }.values()
+        ),
         "formats": sorted({f for a in all_albums() for f in a["format"].split(", ")}),
     }
 

@@ -1389,3 +1389,64 @@ def test_file_manager_uses_own_navidrome_identity_for_playlists(client, monkeypa
     monkeypatch.setattr(m, "nav_call", nav)
     result = client.get("/api/navidrome/playlists")
     assert result.status_code == 200 and result.json()["username"] == "patrick"
+
+
+def test_album_genre_filter_expands_semicolon_lists(client, monkeypatch):
+    base = {
+        "artist": "Artist",
+        "year": 2026,
+        "format": "FLAC",
+        "completeness": "complete",
+    }
+    albums = [
+        {
+            **base,
+            "id": "mixed",
+            "title": "Mixed",
+            "genre": " rock ; hard;; ",
+            "zone": "Bibliothèque",
+        },
+        {
+            **base,
+            "id": "rock",
+            "title": "Rock",
+            "genre": "Rock",
+            "zone": "Bibliothèque",
+        },
+        {
+            **base,
+            "id": "hardrock",
+            "title": "Hard Rock",
+            "genre": "Hard Rock",
+            "zone": "Bibliothèque",
+        },
+        {
+            **base,
+            "id": "incoming",
+            "title": "Incoming",
+            "genre": "hard;Pop",
+            "zone": "Téléchargements",
+        },
+    ]
+    monkeypatch.setattr(m, "all_albums", lambda: albums)
+    result = client.get("/api/albums").json()
+    assert {g.casefold() for g in result["genres"]} == {
+        "rock",
+        "hard",
+        "hard rock",
+        "pop",
+    }
+    assert len(result["genres"]) == 4
+    for genre, expected in [
+        ("rock", {"mixed", "rock"}),
+        ("HARD", {"mixed"}),
+        ("Hard Rock", {"hardrock"}),
+    ]:
+        result = client.get("/api/albums", params={"genre": genre}).json()
+        assert {a["id"] for a in result["items"]} == expected
+        assert result["total"] == len(expected)
+    result = client.get(
+        "/api/albums", params={"genre": "hard", "zone": "Téléchargements"}
+    ).json()
+    assert [a["id"] for a in result["items"]] == ["incoming"]
+    assert albums[0]["genre"] == " rock ; hard;; "
